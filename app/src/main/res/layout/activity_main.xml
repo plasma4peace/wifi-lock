@@ -9,26 +9,32 @@
         android:id="@+id/btnScan"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Scan WiFi Networks"/>
+        android:text="Scan WiFi Networks"
+        android:textAllCaps="false"/>
 
     <TextView
         android:id="@+id/tvStatus"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:text="Status: Not scanning"
-        android:paddingTop="8dp"/>
+        android:paddingTop="8dp"
+        android:paddingBottom="8dp"
+        android:text="Not scanning"
+        android:textSize="14sp"/>
 
     <ListView
         android:id="@+id/lvNetworks"
         android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_weight="1"/>
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:divider="@android:color/darker_gray"
+        android:dividerHeight="1dp"/>
 
     <Button
         android:id="@+id/btnLock"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="Lock to Selected Network"
+        android:textAllCaps="false"
         android:layout_marginTop="8dp"/>
 
 </LinearLayout>
