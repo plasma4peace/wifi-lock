@@ -1,4 +1,4 @@
-# WiFi Scanner & Lock App
+# WiFi Lock
 
 An Android app that scans WiFi networks, shows weakest signals first, and allows locking to a specific network with aggressive reconnection.
 
