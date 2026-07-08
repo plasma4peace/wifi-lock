@@ -8,9 +8,6 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
 import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
@@ -25,16 +22,17 @@ public class WifiLockService extends Service {
     private static final int NOTIFICATION_ID = 1001;
 
     private WifiManager wifiManager;
-    private ConnectivityManager connectivityManager;
     private String targetBssid;
     private String targetSsid;
     private Handler handler;
-    private boolean isConnected = false;
+    private int reconnectAttempts = 0;
 
     private BroadcastReceiver connectivityReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            checkConnection();
+            if (intent.getAction() != null && intent.getAction().equals(WifiManager.NETWORK_STATE_CHANGED_ACTION)) {
+                Log.i(TAG, "Network state changed");
+            }
         }
     };
 
@@ -42,20 +40,26 @@ public class WifiLockService extends Service {
     public void onCreate() {
         super.onCreate();
         wifiManager = (WifiManager) getSystemService(Context.WIFI_SERVICE);
-        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         handler = new Handler(Looper.getMainLooper());
 
+        // Create notification channel (safe even if already exists)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             NotificationChannel channel = new NotificationChannel(
                 CHANNEL_ID,
                 "WiFi Lock Service",
                 NotificationManager.IMPORTANCE_LOW
             );
-            NotificationManager nm = getSystemService(NotificationManager.class);
+            channel.setShowBadge(false);
+            NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
             if (nm != null) nm.createNotificationChannel(channel);
         }
 
-        registerReceiver(connectivityReceiver, new IntentFilter(ConnectivityManager.CONNECTIVITY_ACTION));
+        IntentFilter filter = new IntentFilter(WifiManager.NETWORK_STATE_CHANGED_ACTION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(connectivityReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(connectivityReceiver, filter);
+        }
     }
 
     @Override
@@ -63,25 +67,39 @@ public class WifiLockService extends Service {
         if (intent != null) {
             targetBssid = intent.getStringExtra("bssid");
             targetSsid = intent.getStringExtra("ssid");
-            Log.i(TAG, "Starting service for BSSID: " + targetBssid + ", SSID: " + targetSsid);
+            String ssidDisplay = (targetSsid != null && !targetSsid.isEmpty()) ? targetSsid : "selected network";
+            Log.i(TAG, "Starting service for BSSID: " + targetBssid);
 
             // Show foreground notification (required for Android 8+)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                Notification notification = new Notification.Builder(this, CHANNEL_ID)
-                    .setContentTitle("WiFi Lock")
-                    .setContentText("Locked to: " + targetSsid)
-                    .setSmallIcon(android.R.drawable.ic_lock_lock)
-                    .setOngoing(true)
-                    .build();
-                startForeground(NOTIFICATION_ID, notification);
-            }
+            Notification notification = buildNotification("Locked to: " + ssidDisplay);
+            startForeground(NOTIFICATION_ID, notification);
 
             startReconnectionLoop();
         }
         return START_STICKY;
     }
 
+    private Notification buildNotification(String text) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            return new Notification.Builder(this, CHANNEL_ID)
+                .setContentTitle("WiFi Lock")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setOngoing(true)
+                .build();
+        } else {
+            // Legacy for pre-O devices
+            return new Notification.Builder(this)
+                .setContentTitle("WiFi Lock")
+                .setContentText(text)
+                .setSmallIcon(android.R.drawable.ic_lock_lock)
+                .setOngoing(true)
+                .build();
+        }
+    }
+
     private void startReconnectionLoop() {
+        handler.removeCallbacksAndMessages(null);
         handler.postDelayed(new Runnable() {
             @Override
             public void run() {
@@ -93,31 +111,41 @@ public class WifiLockService extends Service {
 
     private void checkAndReconnect() {
         if (!isConnectedToTarget()) {
-            Log.i(TAG, "Not connected to target network, attempting reconnect...");
-            reconnectToTarget();
+            reconnectAttempts++;
+            Log.i(TAG, "Disconnected from target (" + reconnectAttempts + " attempts), reconnecting...");
+            // Only do the aggressive toggle every 3rd attempt to avoid wearing radios
+            if (reconnectAttempts % 3 == 0) {
+                toggleWiFi();
+            }
+        } else {
+            reconnectAttempts = 0;
         }
     }
 
     private boolean isConnectedToTarget() {
-        WifiInfo wifiInfo = wifiManager.getConnectionInfo();
-        if (wifiInfo == null) return false;
-
-        String currentBssid = wifiInfo.getBSSID();
-        return targetBssid != null && targetBssid.equals(currentBssid);
+        if (targetBssid == null) return false;
+        try {
+            WifiInfo wifiInfo = wifiManager.getConnectionInfo();
+            if (wifiInfo == null) return false;
+            String currentBssid = wifiInfo.getBSSID();
+            return targetBssid.equals(currentBssid);
+        } catch (Exception e) {
+            Log.e(TAG, "Error checking connection", e);
+            return false;
+        }
     }
 
-    private void reconnectToTarget() {
-        // Toggle WiFi to force reconnection
-        wifiManager.setWifiEnabled(false);
-        handler.postDelayed(() -> {
-            wifiManager.setWifiEnabled(true);
-            Log.i(TAG, "WiFi re-enabled, attempting to reconnect to " + targetSsid);
-        }, 3000);
-    }
-
-    private void checkConnection() {
-        isConnected = isConnectedToTarget();
-        Log.i(TAG, "Connection status: " + (isConnected ? "connected" : "disconnected"));
+    private void toggleWiFi() {
+        try {
+            wifiManager.setWifiEnabled(false);
+            handler.postDelayed(() -> {
+                wifiManager.setWifiEnabled(true);
+                Log.i(TAG, "WiFi toggled, reconnecting to " +
+                    (targetSsid != null ? targetSsid : "target"));
+            }, 3000);
+        } catch (Exception e) {
+            Log.e(TAG, "Error toggling WiFi", e);
+        }
     }
 
     @Override
@@ -125,7 +153,7 @@ public class WifiLockService extends Service {
         super.onDestroy();
         try {
             unregisterReceiver(connectivityReceiver);
-        } catch (IllegalArgumentException ignored) {}
+        } catch (Exception ignored) {}
         handler.removeCallbacksAndMessages(null);
     }
 

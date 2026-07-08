@@ -6,17 +6,10 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
 import android.content.pm.PackageManager;
-import android.net.ConnectivityManager;
-import android.net.Network;
-import android.net.NetworkCapabilities;
-import android.net.NetworkRequest;
 import android.net.wifi.ScanResult;
 import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
-import android.view.View;
 import android.view.ViewGroup;
 import android.widget.ArrayAdapter;
 import android.widget.Button;
@@ -26,33 +19,37 @@ import android.widget.Toast;
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
+import androidx.localbroadcastmanager.content.LocalBroadcastManager;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
 public class MainActivity extends AppCompatActivity {
     private WifiManager wifiManager;
-    private ConnectivityManager connectivityManager;
     private ListView lvNetworks;
     private Button btnScan, btnLock;
     private TextView tvStatus;
     private List<ScanResult> networks = new ArrayList<>();
     private int selectedNetworkIndex = -1;
-    private String lockedBssid = null;
-    private Handler handler = new Handler(Looper.getMainLooper());
-    private boolean isServiceRunning = false;
     private NetworkAdapter networkAdapter;
 
     private BroadcastReceiver scanReceiver = new BroadcastReceiver() {
         @Override
         public void onReceive(Context context, Intent intent) {
-            List<ScanResult> results = wifiManager.getScanResults();
-            networks.clear();
-            networks.addAll(results);
-            // Sort by signal strength (weakest first - lower dBm is weaker)
-            Collections.sort(networks, (a, b) -> Integer.compare(a.level, b.level));
-            networkAdapter.notifyDataSetChanged();
-            tvStatus.setText("Scanned " + networks.size() + " networks");
+            if (intent.getAction() != null && intent.getAction().equals(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)) {
+                boolean success = intent.getBooleanExtra(WifiManager.EXTRA_RESULTS_UPDATED, false);
+                if (success) {
+                    List<ScanResult> results = wifiManager.getScanResults();
+                    networks.clear();
+                    networks.addAll(results);
+                    Collections.sort(networks, (a, b) -> Integer.compare(a.level, b.level));
+                    networkAdapter.notifyDataSetChanged();
+                    tvStatus.setText("Scanned " + networks.size() + " networks");
+                } else {
+                    tvStatus.setText("Scan failed, try again");
+                }
+            }
         }
     };
 
@@ -62,7 +59,6 @@ public class MainActivity extends AppCompatActivity {
         setContentView(R.layout.activity_main);
 
         wifiManager = (WifiManager) getSystemService(Context.WIFI_SERVICE);
-        connectivityManager = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
         lvNetworks = findViewById(R.id.lvNetworks);
         btnScan = findViewById(R.id.btnScan);
         btnLock = findViewById(R.id.btnLock);
@@ -72,41 +68,46 @@ public class MainActivity extends AppCompatActivity {
         lvNetworks.setAdapter(networkAdapter);
         lvNetworks.setChoiceMode(ListView.CHOICE_MODE_SINGLE);
         lvNetworks.setOnItemClickListener((parent, view, position, id) -> {
-            selectedNetworkIndex = position;
-            lockedBssid = networks.get(position).BSSID;
-            tvStatus.setText("Selected: " + networks.get(position).SSID);
+            if (position >= 0 && position < networks.size()) {
+                selectedNetworkIndex = position;
+                String ssid = networks.get(position).SSID;
+                tvStatus.setText("Selected: " + (ssid.isEmpty() ? "<hidden>" : ssid));
+            }
         });
 
         btnScan.setOnClickListener(v -> requestPermissionsAndScan());
         btnLock.setOnClickListener(v -> lockToSelectedNetwork());
 
-        registerReceiver(scanReceiver, new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION));
+        // Android 14+ requires RECEIVER_NOT_EXPORTED for registered receivers
+        IntentFilter filter = new IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(scanReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
+        } else {
+            registerReceiver(scanReceiver, filter);
+        }
     }
 
     private void requestPermissionsAndScan() {
-        String[] permissions;
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            permissions = new String[]{
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            };
-        } else {
-            permissions = new String[]{
-                Manifest.permission.ACCESS_FINE_LOCATION,
-                Manifest.permission.ACCESS_COARSE_LOCATION
-            };
-        }
+        List<String> needed = new ArrayList<>();
 
-        boolean allGranted = true;
-        for (String perm : permissions) {
-            if (ActivityCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
-                allGranted = false;
-                break;
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        }
+        if (ActivityCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+                != PackageManager.PERMISSION_GRANTED) {
+            needed.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ActivityCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS)
+                    != PackageManager.PERMISSION_GRANTED) {
+                needed.add(Manifest.permission.POST_NOTIFICATIONS);
             }
         }
 
-        if (!allGranted) {
-            ActivityCompat.requestPermissions(this, permissions, 1);
+        if (!needed.isEmpty()) {
+            ActivityCompat.requestPermissions(this,
+                    needed.toArray(new String[0]), 1);
         } else {
             startScan();
         }
@@ -115,23 +116,26 @@ public class MainActivity extends AppCompatActivity {
     private void startScan() {
         if (!wifiManager.isWifiEnabled()) {
             tvStatus.setText("WiFi is disabled");
-            Toast.makeText(this, "Please enable WiFi", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Please enable WiFi in settings", Toast.LENGTH_SHORT).show();
             return;
         }
-        wifiManager.startScan();
-        tvStatus.setText("Scanning...");
+        boolean started = wifiManager.startScan();
+        if (started) {
+            tvStatus.setText("Scanning...");
+        } else {
+            tvStatus.setText("Could not start scan");
+            Toast.makeText(this, "Scan failed to start", Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void lockToSelectedNetwork() {
-        if (selectedNetworkIndex < 0 || networks.isEmpty()) {
+        if (selectedNetworkIndex < 0 || selectedNetworkIndex >= networks.size()) {
             tvStatus.setText("No network selected");
-            Toast.makeText(this, "Select a network first", Toast.LENGTH_SHORT).show();
+            Toast.makeText(this, "Select a network from the list first", Toast.LENGTH_SHORT).show();
             return;
         }
 
         ScanResult selected = networks.get(selectedNetworkIndex);
-        lockedBssid = selected.BSSID;
-
         startWifiLockService(selected.BSSID, selected.SSID);
         tvStatus.setText("Locked to: " + selected.SSID);
     }
@@ -140,12 +144,16 @@ public class MainActivity extends AppCompatActivity {
         Intent serviceIntent = new Intent(this, WifiLockService.class);
         serviceIntent.putExtra("bssid", bssid);
         serviceIntent.putExtra("ssid", ssid);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(serviceIntent);
-        } else {
-            startService(serviceIntent);
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent);
+            } else {
+                startService(serviceIntent);
+            }
+        } catch (Exception e) {
+            tvStatus.setText("Error: " + e.getMessage());
+            Toast.makeText(this, "Failed to start lock service", Toast.LENGTH_SHORT).show();
         }
-        isServiceRunning = true;
     }
 
     @Override
@@ -162,8 +170,8 @@ public class MainActivity extends AppCompatActivity {
             if (allGranted) {
                 startScan();
             } else {
-                tvStatus.setText("Location permission required for WiFi scanning");
-                Toast.makeText(this, "Location permission is required to scan WiFi networks", Toast.LENGTH_LONG).show();
+                tvStatus.setText("Permissions required");
+                Toast.makeText(this, "Location permission is needed to scan WiFi", Toast.LENGTH_LONG).show();
             }
         }
     }
@@ -173,7 +181,7 @@ public class MainActivity extends AppCompatActivity {
         super.onDestroy();
         try {
             unregisterReceiver(scanReceiver);
-        } catch (IllegalArgumentException ignored) {}
+        } catch (Exception ignored) {}
     }
 
     private class NetworkAdapter extends ArrayAdapter<String> {
@@ -186,24 +194,31 @@ public class MainActivity extends AppCompatActivity {
             return networks.size();
         }
 
+        @Override
+        public String getItem(int position) {
+            if (position < 0 || position >= networks.size()) return "";
+            ScanResult r = networks.get(position);
+            String ssid = r.SSID.isEmpty() ? "<hidden>" : r.SSID;
+            String security = getSecurity(r);
+            return String.format("%s (%d dBm) %s", ssid, r.level, security);
+        }
+
         @NonNull
         @Override
         public View getView(int position, View convertView, @NonNull ViewGroup parent) {
             TextView tv = (TextView) super.getView(position, convertView, parent);
-            ScanResult result = networks.get(position);
-            String ssid = result.SSID.isEmpty() ? "<hidden>" : result.SSID;
-            String security = getSecurity(result);
-            tv.setText(ssid + "  |  " + result.level + " dBm  " + security);
+            tv.setText(getItem(position));
             return tv;
         }
 
         private String getSecurity(ScanResult result) {
             String caps = result.capabilities;
-            if (caps.contains("WPA3")) return "🔒WPA3";
-            if (caps.contains("WPA2")) return "🔒WPA2";
-            if (caps.contains("WPA")) return "🔒WPA";
-            if (caps.contains("WEP")) return "🔒WEP";
-            return "🔓Open";
+            if (caps == null) return "";
+            if (caps.contains("WPA3")) return "WPA3";
+            if (caps.contains("WPA2")) return "WPA2";
+            if (caps.contains("WPA")) return "WPA";
+            if (caps.contains("WEP")) return "WEP";
+            return "Open";
         }
     }
 }
