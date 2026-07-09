@@ -61,6 +61,8 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        (application as WiFiLockApp).checkAndNotifyCrash()
+
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
 
         scanReceiver = object : BroadcastReceiver() {
