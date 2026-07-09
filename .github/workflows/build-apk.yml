@@ -19,28 +19,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Generate debug keystore if not present
-        run: |
-          if [ ! -f app/debug.keystore ]; then
-            keytool -genkeypair -v \
-              -keystore app/debug.keystore \
-              -storepass android \
-              -keypass android \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -alias androiddebugkey \
-              -dname "CN=Android Debug,O=Android,C=US" \
-              -storetype PKCS12
-            echo "KEYSTORE_GENERATED=true" >> $GITHUB_ENV
-          fi
+      - name: Restore debug keystore from cache
+        id: keystore-cache
+        uses: actions/cache@v4
+        with:
+          path: app/debug.keystore
+          key: wifi-lock-debug-keystore
 
-      - name: Commit keystore back to repo (first run)
-        if: env.KEYSTORE_GENERATED == 'true'
+      - name: Generate debug keystore (first time only)
+        if: steps.keystore-cache.outputs.cache-hit != 'true'
         run: |
-          git config user.name "github-actions"
-          git config user.email "actions@github.com"
-          git add app/debug.keystore
-          git commit -m "Add debug keystore for consistent signing [skip ci]"
-          git push
+          keytool -genkeypair -v \
+            -keystore app/debug.keystore \
+            -storepass android \
+            -keypass android \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -alias androiddebugkey \
+            -dname "CN=Android Debug,O=Android,C=US" \
+            -storetype PKCS12
 
       - name: Setup Gradle
         uses: gradle/actions/setup-gradle@v3
