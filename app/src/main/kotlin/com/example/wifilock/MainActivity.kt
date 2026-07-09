@@ -10,6 +10,8 @@ import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
@@ -30,7 +32,11 @@ class MainActivity : ComponentActivity() {
     private lateinit var wifiManager: WifiManager
     private val scanResults = mutableStateListOf<ScanResult>()
     private val permissionsGranted = mutableStateOf(false)
+    private val isScanning = mutableStateOf(false)
+    private val isLocking = mutableStateOf(false)
     private var scanReceiver: BroadcastReceiver? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val scanTimeout = Runnable { isScanning.value = false }
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
@@ -46,8 +52,10 @@ class MainActivity : ComponentActivity() {
         scanReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == WifiManager.SCAN_RESULTS_AVAILABLE_ACTION) {
+                    mainHandler.removeCallbacks(scanTimeout)
                     scanResults.clear()
                     scanResults.addAll(wifiManager.scanResults ?: emptyList())
+                    isScanning.value = false
                 }
             }
         }
@@ -74,8 +82,13 @@ class MainActivity : ComponentActivity() {
                             results = scanResults,
                             selectedSsid = selectedSsid,
                             lockedSsid = lockedSsid,
+                            isScanning = isScanning.value,
+                            isLocking = isLocking.value,
                             onScan = {
                                 if (hasRequiredPermissions()) {
+                                    isScanning.value = true
+                                    mainHandler.removeCallbacks(scanTimeout)
+                                    mainHandler.postDelayed(scanTimeout, 6000)
                                     wifiManager.startScan()
                                 } else {
                                     requestPermissionLauncher.launch(getRequiredPermissions())
@@ -84,7 +97,7 @@ class MainActivity : ComponentActivity() {
                             onSelect = { selectedSsid = it },
                             onLock = {
                                 selectedSsid?.let { ssid ->
-                                    lockedSsid = ssid
+                                    isLocking.value = true
                                     val intent = Intent(this, WiFiLockService::class.java).apply {
                                         putExtra("LOCKED_SSID", ssid)
                                     }
@@ -94,11 +107,15 @@ class MainActivity : ComponentActivity() {
                                         @Suppress("DEPRECATION")
                                         startService(intent)
                                     }
+                                    lockedSsid = ssid
+                                    isLocking.value = false
                                 }
                             },
                             onUnlock = {
+                                isLocking.value = true
                                 stopService(Intent(this, WiFiLockService::class.java))
                                 lockedSsid = null
+                                isLocking.value = false
                             }
                         )
                     } else {
@@ -113,6 +130,7 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        mainHandler.removeCallbacks(scanTimeout)
         scanReceiver?.let { unregisterReceiver(it) }
     }
 
@@ -138,6 +156,8 @@ fun MainScreen(
     results: List<ScanResult>,
     selectedSsid: String?,
     lockedSsid: String?,
+    isScanning: Boolean,
+    isLocking: Boolean,
     onScan: () -> Unit,
     onSelect: (String) -> Unit,
     onLock: () -> Unit,
@@ -154,31 +174,66 @@ fun MainScreen(
             Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
         ) {
-            Button(onClick = onScan, modifier = Modifier.weight(1f)) {
-                Text("Scan")
+            Button(
+                onClick = onScan,
+                enabled = !isScanning,
+                modifier = Modifier.weight(1f)
+            ) {
+                if (isScanning) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Scanning")
+                } else {
+                    Text("Scan")
+                }
             }
             Button(
                 onClick = onLock,
-                enabled = selectedSsid != null,
+                enabled = selectedSsid != null && !isLocking && lockedSsid == null,
                 modifier = Modifier.weight(1f)
             ) {
-                Text(if (lockedSsid != null) "Locked" else "Lock")
+                if (isLocking && lockedSsid == null) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onPrimary
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Locking")
+                } else {
+                    Text(if (lockedSsid != null) "Locked" else "Lock")
+                }
             }
         }
         if (lockedSsid != null) {
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = onUnlock,
+                enabled = !isLocking,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                Text("Unlock  ($lockedSsid)")
+                if (isLocking) {
+                    CircularProgressIndicator(
+                        modifier = Modifier.size(18.dp),
+                        strokeWidth = 2.dp,
+                        color = MaterialTheme.colorScheme.onError
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text("Unlocking")
+                } else {
+                    Text("Unlock  ($lockedSsid)")
+                }
             }
         }
         Spacer(Modifier.height(12.dp))
-        if (results.isEmpty()) {
+        if (results.isEmpty() && !isScanning) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     "No networks found.\nTap Scan (location must be on).",
