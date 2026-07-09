@@ -11,6 +11,7 @@ import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
+import android.util.Log
 import androidx.core.app.NotificationCompat
 
 class WiFiLockService : Service() {
@@ -29,8 +30,17 @@ class WiFiLockService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        lockedSsid = intent?.getStringExtra("LOCKED_SSID")
-        startForeground(1, buildNotification("Locking to $lockedSsid"))
+        lockedSsid = intent?.getStringExtra("LOCKED_SSID") ?: return START_NOT_STICKY
+
+        try {
+            val notif = buildNotification("Locking to $lockedSsid")
+            startForeground(1, notif)
+        } catch (e: Exception) {
+            Log.e("WiFiLockService", "startForeground failed: ${e.message}")
+            stopSelf()
+            return START_NOT_STICKY
+        }
+
         startMonitoring()
         return START_STICKY
     }
@@ -50,9 +60,11 @@ class WiFiLockService : Service() {
     }
 
     private fun currentSsid(): String? {
-        val info = wifiManager.connectionInfo ?: return null
-        val ssid = info.ssid ?: return null
-        return ssid.removeSurrounding("\"")
+        return try {
+            val info = wifiManager.connectionInfo ?: return null
+            val ssid = info.ssid ?: return null
+            ssid.removeSurrounding("\"")
+        } catch (_: Exception) { null }
     }
 
     private fun checkConnection() {
@@ -67,16 +79,17 @@ class WiFiLockService : Service() {
     }
 
     private fun reconnect(ssid: String) {
-        // Try saved network first (works on all API levels)
-        val configured = wifiManager.configuredNetworks?.firstOrNull {
-            it.SSID.removeSurrounding("\"") == ssid
-        }
-        if (configured != null) {
-            wifiManager.enableNetwork(configured.networkId, true)
-            wifiManager.reassociate()
-            return
-        }
-        // API 29+: request connection via specifier (open network, if in range)
+        try {
+            val configured = wifiManager.configuredNetworks?.firstOrNull {
+                it.SSID.removeSurrounding("\"") == ssid
+            }
+            if (configured != null) {
+                wifiManager.enableNetwork(configured.networkId, true)
+                wifiManager.reassociate()
+                return
+            }
+        } catch (_: Exception) { }
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
                 val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
@@ -89,9 +102,7 @@ class WiFiLockService : Service() {
                 val cm = getSystemService(Context.CONNECTIVITY_SERVICE)
                         as android.net.ConnectivityManager
                 cm.requestNetwork(request, object : android.net.ConnectivityManager.NetworkCallback() {})
-            } catch (_: Exception) {
-                // ignore — will retry on next cycle
-            }
+            } catch (_: Exception) { }
         }
     }
 
@@ -117,14 +128,17 @@ class WiFiLockService : Service() {
     }
 
     private fun updateNotification(status: String) {
-        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-        manager.notify(1, buildNotification(status))
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(1, buildNotification(status))
+        } catch (_: Exception) { }
     }
 
     override fun onDestroy() {
         thread?.quitSafely()
         thread = null
         handler = null
+        stopForeground(STOP_FOREGROUND_REMOVE)
         super.onDestroy()
     }
 
