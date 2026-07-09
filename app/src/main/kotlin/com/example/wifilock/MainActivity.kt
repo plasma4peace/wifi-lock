@@ -37,11 +37,25 @@ class MainActivity : ComponentActivity() {
     private var scanReceiver: BroadcastReceiver? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeout = Runnable { isScanning.value = false }
+    private val pendingLockSsid = mutableListOf<String>()
 
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
-    ) { _ ->
-        permissionsGranted.value = hasRequiredPermissions()
+    ) { result ->
+        // Check required (location) permissions
+        val allGranted = getRequiredPermissions().all {
+            result.getOrDefault(it, false) || ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
+        }
+        // Check notification permission (needed for foreground service)
+        val notifOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            result.getOrDefault(Manifest.permission.POST_NOTIFICATIONS, false)
+                    || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else true
+        permissionsGranted.value = allGranted
+        if (allGranted && notifOk && pendingLockSsid.isNotEmpty()) {
+            val ssid = pendingLockSsid.removeFirst()
+            doLock(ssid)
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -97,18 +111,17 @@ class MainActivity : ComponentActivity() {
                             onSelect = { selectedSsid = it },
                             onLock = {
                                 selectedSsid?.let { ssid ->
-                                    isLocking.value = true
-                                    val intent = Intent(this, WiFiLockService::class.java).apply {
-                                        putExtra("LOCKED_SSID", ssid)
-                                    }
-                                    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                                        startForegroundService(intent)
+                                    if (hasNotificationPermission()) {
+                                        isLocking.value = true
+                                        doLock(ssid)
+                                        lockedSsid = ssid
+                                        isLocking.value = false
                                     } else {
-                                        @Suppress("DEPRECATION")
-                                        startService(intent)
+                                        pendingLockSsid.add(ssid)
+                                        requestPermissionLauncher.launch(
+                                            arrayOf(Manifest.permission.POST_NOTIFICATIONS)
+                                        )
                                     }
-                                    lockedSsid = ssid
-                                    isLocking.value = false
                                 }
                             },
                             onUnlock = {
@@ -128,10 +141,28 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun doLock(ssid: String) {
+        val intent = Intent(this, WiFiLockService::class.java).apply {
+            putExtra("LOCKED_SSID", ssid)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            @Suppress("DEPRECATION")
+            startService(intent)
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(scanTimeout)
         scanReceiver?.let { unregisterReceiver(it) }
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else true
     }
 
     private fun hasRequiredPermissions(): Boolean {
