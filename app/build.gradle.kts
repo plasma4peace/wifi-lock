@@ -4,31 +4,30 @@ plugins {
 }
 
 android {
+    namespace = "com.example.wifilock"
     compileSdk = 34
+
     defaultConfig {
         applicationId = "com.example.wifilock"
-        minSdk = 21
+        minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
     }
+
     buildTypes {
         release {
             isMinifyEnabled = false
             proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
         }
     }
+
     buildFeatures {
         compose = true
     }
+
     composeOptions {
         kotlinCompilerExtensionVersion = "1.5.0"
-    }
-    // Add Kotlin source directory
-    sourceSets {
-        getByName("main") {
-            java.srcDir("src/main/kotlin")
-        }
     }
 }
 
