@@ -33,7 +33,7 @@ class MainActivity : ComponentActivity() {
     private val scanResults = mutableStateListOf<ScanResult>()
     private val permissionsGranted = mutableStateOf(false)
     private val isScanning = mutableStateOf(false)
-    private val isLocking = mutableStateOf(false)
+    private val isWorking = mutableStateOf(false)
     private var scanReceiver: BroadcastReceiver? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val scanTimeout = Runnable { isScanning.value = false }
@@ -42,11 +42,9 @@ class MainActivity : ComponentActivity() {
     private val requestPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
-        // Check required (location) permissions
         val allGranted = getRequiredPermissions().all {
             result.getOrDefault(it, false) || ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
         }
-        // Check notification permission (needed for foreground service)
         val notifOk = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             result.getOrDefault(Manifest.permission.POST_NOTIFICATIONS, false)
                     || ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
@@ -86,6 +84,9 @@ class MainActivity : ComponentActivity() {
             permissionsGranted.value = true
         }
 
+        // Start the persistent foreground service (idle in tray)
+        startService(Intent(this, WiFiLockService::class.java))
+
         setContent {
             val granted = permissionsGranted.value
             var selectedSsid by remember { mutableStateOf<String?>(null) }
@@ -99,7 +100,7 @@ class MainActivity : ComponentActivity() {
                             selectedSsid = selectedSsid,
                             lockedSsid = lockedSsid,
                             isScanning = isScanning.value,
-                            isLocking = isLocking.value,
+                            isWorking = isWorking.value,
                             onScan = {
                                 if (hasRequiredPermissions()) {
                                     isScanning.value = true
@@ -114,10 +115,10 @@ class MainActivity : ComponentActivity() {
                             onLock = {
                                 selectedSsid?.let { ssid ->
                                     if (hasNotificationPermission()) {
-                                        isLocking.value = true
+                                        isWorking.value = true
                                         doLock(ssid)
                                         lockedSsid = ssid
-                                        isLocking.value = false
+                                        isWorking.value = false
                                     } else {
                                         pendingLockSsid.add(ssid)
                                         requestPermissionLauncher.launch(
@@ -127,10 +128,10 @@ class MainActivity : ComponentActivity() {
                                 }
                             },
                             onUnlock = {
-                                isLocking.value = true
-                                stopService(Intent(this, WiFiLockService::class.java))
+                                isWorking.value = true
+                                doUnlock()
                                 lockedSsid = null
-                                isLocking.value = false
+                                isWorking.value = false
                             }
                         )
                     } else {
@@ -146,6 +147,18 @@ class MainActivity : ComponentActivity() {
     private fun doLock(ssid: String) {
         val intent = Intent(this, WiFiLockService::class.java).apply {
             putExtra("LOCKED_SSID", ssid)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(intent)
+        } else {
+            @Suppress("DEPRECATION")
+            startService(intent)
+        }
+    }
+
+    private fun doUnlock() {
+        val intent = Intent(this, WiFiLockService::class.java).apply {
+            putExtra("UNLOCK", true)
         }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
@@ -190,7 +203,7 @@ fun MainScreen(
     selectedSsid: String?,
     lockedSsid: String?,
     isScanning: Boolean,
-    isLocking: Boolean,
+    isWorking: Boolean,
     onScan: () -> Unit,
     onSelect: (String) -> Unit,
     onLock: () -> Unit,
@@ -226,10 +239,10 @@ fun MainScreen(
             }
             Button(
                 onClick = onLock,
-                enabled = selectedSsid != null && !isLocking && lockedSsid == null,
+                enabled = selectedSsid != null && !isWorking && lockedSsid == null,
                 modifier = Modifier.weight(1f)
             ) {
-                if (isLocking && lockedSsid == null) {
+                if (isWorking && lockedSsid == null) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
@@ -246,13 +259,13 @@ fun MainScreen(
             Spacer(Modifier.height(8.dp))
             Button(
                 onClick = onUnlock,
-                enabled = !isLocking,
+                enabled = !isWorking,
                 colors = ButtonDefaults.buttonColors(
                     containerColor = MaterialTheme.colorScheme.error
                 ),
                 modifier = Modifier.fillMaxWidth()
             ) {
-                if (isLocking) {
+                if (isWorking) {
                     CircularProgressIndicator(
                         modifier = Modifier.size(18.dp),
                         strokeWidth = 2.dp,
@@ -306,7 +319,7 @@ fun MainScreen(
                                     style = MaterialTheme.typography.bodySmall
                                 )
                             }
-                            if (isLocked) Text("\uD83D\uDD12")
+                            if (isLocked) Text("🔒")
                         }
                     }
                 }

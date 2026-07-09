@@ -35,33 +35,49 @@ class WiFiLockService : Service() {
     private var handler: Handler? = null
     private val CHECK_INTERVAL_MS = 5000L
     private var consecutiveFailures = 0
+    private var activeBuilder: NotificationCompat.Builder? = null
 
     override fun onCreate() {
         super.onCreate()
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         connectivityManager = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         createChannel()
+        startInForeground()
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        lockedSsid = intent?.getStringExtra("LOCKED_SSID")
-        if (lockedSsid.isNullOrBlank()) {
-            stopSelf()
-            return START_NOT_STICKY
-        }
-
-        log("Service starting, locked to: $lockedSsid")
-
+    // Always show a persistent notification so the app lives in the tray
+    private fun startInForeground() {
         try {
-            val notif = buildNotification("Locked to $lockedSsid")
+            val notif = buildNotification(
+                if (lockedSsid != null) "Locked to $lockedSsid" else "Idle — no network locked"
+            )
             startForeground(1, notif)
         } catch (e: Exception) {
             log("startForeground FAILED: ${e.message}")
-            stopSelf()
-            return START_NOT_STICKY
         }
+    }
 
-        startMonitoring()
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val newSsid = intent?.getStringExtra("LOCKED_SSID")
+        val unlock = intent?.getBooleanExtra("UNLOCK", false) ?: false
+
+        when {
+            unlock -> {
+                log("Unlock requested — stopping service")
+                stopSelf()
+                return START_NOT_STICKY
+            }
+            newSsid != null -> {
+                lockedSsid = newSsid
+                log("Service locked to: $lockedSsid")
+                startMonitoring()
+                updateNotification("Locked to $lockedSsid")
+            }
+            else -> {
+                // re-delivery / restart: keep idle
+                updateNotification("Idle — no network locked")
+            }
+        }
         return START_STICKY
     }
 
@@ -138,7 +154,7 @@ class WiFiLockService : Service() {
     }
 
     private fun reconnect(ssid: String) {
-        // Strategy 1: enableNetwork for saved networks (works on API <33, often works on 33+ too)
+        // Strategy 1: enableNetwork for saved networks
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -177,11 +193,9 @@ class WiFiLockService : Service() {
                         log("Specifier: network available, binding $network")
                         connectivityManager.bindProcessToNetwork(network)
                     }
-
                     override fun onUnavailable() {
                         log("Specifier: network unavailable")
                     }
-
                     override fun onLost(network: Network) {
                         log("Specifier: network lost $network")
                     }
@@ -192,8 +206,7 @@ class WiFiLockService : Service() {
             }
         }
 
-        // If we've tried many times, show a helpful notification
-        if (consecutiveFailures >= 6) {  // ~30 seconds of failure
+        if (consecutiveFailures >= 6) {
             val intent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             }
@@ -234,31 +247,48 @@ class WiFiLockService : Service() {
                 "WiFi Lock Service",
                 NotificationManager.IMPORTANCE_LOW
             )
+            channel.setShowBadge(true)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)
         }
     }
 
     private fun buildNotification(status: String): Notification {
-        val unlockIntent = Intent(this, MainActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val contentIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
         }
-        val pi = PendingIntent.getActivity(this, 0, unlockIntent,
+        val pi = PendingIntent.getActivity(this, 0, contentIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
-            .setContentTitle("WiFi Lock Active")
+        activeBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("WiFi Lock")
             .setContentText(status)
             .setSmallIcon(R.drawable.ic_wifi_notification)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .setContentIntent(pi)
-            .build()
+
+        return activeBuilder!!.build()
     }
 
     private fun updateNotification(status: String) {
         try {
-            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.notify(1, buildNotification(status))
+            // Rebuild builder to keep content intent + ongoing flag
+            val contentIntent = Intent(this, MainActivity::class.java).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            }
+            val pi = PendingIntent.getActivity(this, 0, contentIntent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+            val notif = NotificationCompat.Builder(this, CHANNEL_ID)
+                .setContentTitle("WiFi Lock")
+                .setContentText(status)
+                .setSmallIcon(R.drawable.ic_wifi_notification)
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setContentIntent(pi)
+                .build()
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(1, notif)
         } catch (_: Exception) { }
     }
 
