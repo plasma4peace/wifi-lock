@@ -6,7 +6,6 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.IBinder
 
@@ -32,7 +31,7 @@ class WiFiLockService : Service() {
     private fun buildNotification(): Notification {
         return Notification.Builder(this, CHANNEL_ID)
             .setContentTitle("WiFi Lock Active")
-            .setSmallIcon(android.R.drawable.stat_sys_wifi)
+            .setSmallIcon(R.drawable.ic_wifi_notification)
             .build()
     }
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
