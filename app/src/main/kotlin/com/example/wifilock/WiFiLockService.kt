@@ -6,17 +6,95 @@ import android.app.NotificationManager
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.net.wifi.WifiManager
 import android.os.Build
+import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
+import androidx.core.app.NotificationCompat
 
 class WiFiLockService : Service() {
+
     private val CHANNEL_ID = "wifi_lock_channel"
+    private lateinit var wifiManager: WifiManager
+    private var lockedSsid: String? = null
+    private var thread: HandlerThread? = null
+    private var handler: Handler? = null
+    private val CHECK_INTERVAL_MS = 5000L
+
     override fun onCreate() {
         super.onCreate()
+        wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         createChannel()
-        startForeground(1, buildNotification())
-        // TODO: monitor WiFi state and reconnect if needed
     }
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        lockedSsid = intent?.getStringExtra("LOCKED_SSID")
+        startForeground(1, buildNotification("Locking to $lockedSsid"))
+        startMonitoring()
+        return START_STICKY
+    }
+
+    private fun startMonitoring() {
+        thread?.quitSafely()
+        thread = HandlerThread("wifi-lock-monitor").also {
+            it.start()
+            handler = Handler(it.looper)
+            handler?.post(object : Runnable {
+                override fun run() {
+                    checkConnection()
+                    handler?.postDelayed(this, CHECK_INTERVAL_MS)
+                }
+            })
+        }
+    }
+
+    private fun currentSsid(): String? {
+        val info = wifiManager.connectionInfo ?: return null
+        val ssid = info.ssid ?: return null
+        return ssid.removeSurrounding("\"")
+    }
+
+    private fun checkConnection() {
+        val target = lockedSsid ?: return
+        val current = currentSsid()
+        if (current != target) {
+            reconnect(target)
+            updateNotification("Reconnecting to $target (was $current)")
+        } else {
+            updateNotification("Locked to $target")
+        }
+    }
+
+    private fun reconnect(ssid: String) {
+        // Try saved network first (works on all API levels)
+        val configured = wifiManager.configuredNetworks?.firstOrNull {
+            it.SSID.removeSurrounding("\"") == ssid
+        }
+        if (configured != null) {
+            wifiManager.enableNetwork(configured.networkId, true)
+            wifiManager.reassociate()
+            return
+        }
+        // API 29+: request connection via specifier (open network, if in range)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            try {
+                val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .build()
+                val request = android.net.NetworkRequest.Builder()
+                    .addTransportType(android.net.NetworkCapabilities.TRANSPORT_WIFI)
+                    .setNetworkSpecifier(specifier)
+                    .build()
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE)
+                        as android.net.ConnectivityManager
+                cm.requestNetwork(request, object : android.net.ConnectivityManager.NetworkCallback() {})
+            } catch (_: Exception) {
+                // ignore — will retry on next cycle
+            }
+        }
+    }
+
     private fun createChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             val channel = NotificationChannel(
@@ -28,14 +106,27 @@ class WiFiLockService : Service() {
             manager.createNotificationChannel(channel)
         }
     }
-    private fun buildNotification(): Notification {
-        return Notification.Builder(this, CHANNEL_ID)
+
+    private fun buildNotification(status: String): Notification {
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("WiFi Lock Active")
+            .setContentText(status)
             .setSmallIcon(R.drawable.ic_wifi_notification)
+            .setOngoing(true)
             .build()
     }
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        return START_STICKY
+
+    private fun updateNotification(status: String) {
+        val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        manager.notify(1, buildNotification(status))
     }
+
+    override fun onDestroy() {
+        thread?.quitSafely()
+        thread = null
+        handler = null
+        super.onDestroy()
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 }
