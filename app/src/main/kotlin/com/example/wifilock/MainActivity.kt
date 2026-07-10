@@ -44,7 +44,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.net.wifi.WifiNetworkSpecifier
 import android.provider.Settings
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -177,41 +176,13 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun systemConnect(ssid: String) {
-        // Trigger system-level connect to this SSID.
-        // 1) Use ConnectivityManager + WifiNetworkSpecifier (API 29+)
-        try {
-            val specifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                WifiNetworkSpecifier.Builder()
-                    .setSsid(ssid)
-                    .build()
-            } else null
-            if (specifier != null) {
-                val request = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                    .setNetworkSpecifier(specifier)
-                    .build()
-                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-                val cb = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(network: Network) {
-                        super.onAvailable(network)
-                        log("systemConnect: network available for $ssid")
-                        cm.unregisterNetworkCallback(this)
-                    }
-                    override fun onUnavailable() {
-                        super.onUnavailable()
-                        log("systemConnect: unavailable for $ssid")
-                        cm.unregisterNetworkCallback(this)
-                    }
-                }
-                cm.requestNetwork(request, cb)
-                log("systemConnect: requestNetwork for $ssid")
-                return
-            }
-        } catch (e: Exception) {
-            log("systemConnect specifier failed: ${e.message}")
-        }
+        // REAL system-level connect — not a virtual app-scoped connection.
+        // Uses WifiManager + ConnectivityManager to make a persistent system connection
+        // that shows in the system WiFi list.
 
-        // 2) Fallback: try legacy enableNetwork (works for saved networks)
+        log("systemConnect: connecting to $ssid")
+
+        // 1) Try direct enableNetwork for saved networks (works on most devices)
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -219,10 +190,13 @@ class MainActivity : ComponentActivity() {
                     it.SSID.removeSurrounding("\"") == ssid
                 }
                 if (match != null) {
+                    log("systemConnect: found saved network ${match.networkId}, enabling")
+                    // Disconnect first to force fresh connection
+                    wifiManager.disconnect()
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
                     wifiManager.reconnect()
-                    log("systemConnect: enableNetwork for saved $ssid")
+                    log("systemConnect: enableNetwork+reassociate+reconnect done")
                     return
                 }
             }
@@ -230,12 +204,38 @@ class MainActivity : ComponentActivity() {
             log("systemConnect enableNetwork failed: ${e.message}")
         }
 
-        // 3) Last resort: open WiFi settings
+        // 2) Try addNetwork + enableNetwork for non-saved open networks
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            try {
+                val config = android.net.wifi.WifiConfiguration().apply {
+                    SSID = "\"$ssid\""
+                    allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+                }
+                val netId = wifiManager.addNetwork(config)
+                if (netId != -1) {
+                    log("systemConnect: addNetwork id=$netId, enabling")
+                    wifiManager.disconnect()
+                    wifiManager.enableNetwork(netId, true)
+                    wifiManager.reassociate()
+                    wifiManager.reconnect()
+                    return
+                }
+            } catch (e: Exception) {
+                log("systemConnect addNetwork failed: ${e.message}")
+            }
+        }
+
+        // 3) Fallback: open system WiFi settings so user can tap manually
         log("systemConnect: opening WiFi settings for $ssid")
-        startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+        try {
+            val intent = Intent(Settings.Panel.ACTION_WIFI)
+            startActivity(intent)
+        } catch (_: Exception) {
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+        }
     }
 
-    private fun log(msg: String) {
+    private fun log(msg: String)    private fun log(msg: String) {
         android.util.Log.d("WiFiLock", msg)
     }
 
