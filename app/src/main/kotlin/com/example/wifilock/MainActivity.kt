@@ -16,7 +16,6 @@ import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
@@ -33,12 +32,12 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
-import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -174,82 +173,97 @@ fun WiFiLockScreen(
 ) {
     val pullRefreshState = rememberPullRefreshState(refreshing = isScanning, onRefresh = onRefresh)
 
-    Box(Modifier.fillMaxSize().padding(16.dp).pullRefresh(pullRefreshState)) {
-        Column(Modifier.fillMaxSize()) {
-            Text("WiFi Lock", style = MaterialTheme.typography.headlineSmall)
-            Spacer(Modifier.height(8.dp))
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(16.dp)
+            .pullRefresh(pullRefreshState)
+    ) {
+        LazyColumn(
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.fillMaxSize()
+        ) {
+            item {
+                Text("WiFi Lock", style = MaterialTheme.typography.headlineSmall)
+                Spacer(Modifier.height(8.dp))
+            }
 
             // ===== LOCKED NETWORK (pinned at top) =====
             if (lockedSsid != null) {
-                HoldToActionCard(
-                    ssid = lockedSsid,
-                    holdMs = 5000,
-                    onAction = onUnlock,
-                    accentColor = MaterialTheme.colorScheme.error,
-                ) {
-                    Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                        Column(Modifier.weight(1f)) {
-                            Text("🔒 $lockedSsid", style = MaterialTheme.typography.titleMedium)
-                            Text("Hold 5s to unlock", style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f))
+                item {
+                    HoldToActionCard(
+                        ssid = lockedSsid,
+                        holdMs = 5000,
+                        onAction = onUnlock,
+                        accentColor = MaterialTheme.colorScheme.error,
+                    ) {
+                        Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                            Column(Modifier.weight(1f)) {
+                                Text("🔒 $lockedSsid", style = MaterialTheme.typography.titleMedium)
+                                Text(
+                                    "Hold 5s to unlock",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.7f)
+                                )
+                            }
                         }
                     }
+                    Spacer(Modifier.height(12.dp))
                 }
-                Spacer(Modifier.height(12.dp))
             }
 
-            // ===== NETWORK LIST (always a scrollable view for pull-to-refresh) =====
-            LazyColumn(
-                verticalArrangement = Arrangement.spacedBy(6.dp),
-                modifier = Modifier.fillMaxSize()
-            ) {
-                if (results.isEmpty() && !isScanning) {
-                    item {
-                        Box(Modifier.fillMaxSize().height(300.dp), contentAlignment = Alignment.Center) {
-                            Text(
-                                if (lockedSsid != null) "Scanning..." else "No networks found.\nPull down to scan.",
-                                textAlign = TextAlign.Center
-                            )
-                        }
+            // ===== NETWORK LIST =====
+            if (results.isEmpty() && !isScanning) {
+                item {
+                    Box(Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
+                        Text(
+                            if (lockedSsid != null) "Scanning..." else "No networks found.\nPull down to scan.",
+                            textAlign = TextAlign.Center
+                        )
                     }
                 }
-                items(results, key = { it.SSID + it.BSSID }) { r ->
-                    val ssid = r.SSID
-                    if (ssid.isBlank()) return@items
-                    val isLocked = ssid == lockedSsid
-                    if (!isLocked) {
-                        HoldToActionCard(
-                            ssid = ssid,
-                            holdMs = 3000,
-                            onAction = { onLock(ssid) },
-                            accentColor = MaterialTheme.colorScheme.primary,
+            }
+
+            items(results, key = { it.SSID + it.BSSID }) { r ->
+                val ssid = r.SSID
+                if (ssid.isBlank()) return@items
+                val isLocked = ssid == lockedSsid
+                if (!isLocked) {
+                    HoldToActionCard(
+                        ssid = ssid,
+                        holdMs = 3000,
+                        onAction = { onLock(ssid) },
+                        accentColor = MaterialTheme.colorScheme.primary,
+                    ) {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
                         ) {
-                            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically) {
-                                Column(Modifier.weight(1f)) {
-                                    Text(if (ssid.isEmpty()) "<hidden>" else ssid, style = MaterialTheme.typography.bodyLarge)
-                                    Text("${r.level} dBm", style = MaterialTheme.typography.bodySmall)
-                                }
+                            Column(Modifier.weight(1f)) {
+                                Text(if (ssid.isEmpty()) "<hidden>" else ssid, style = MaterialTheme.typography.bodyLarge)
+                                Text("${r.level} dBm", style = MaterialTheme.typography.bodySmall)
                             }
                         }
                     }
                 }
             }
+        }
 
+        PullRefreshIndicator(
+            refreshing = isScanning,
+            state = pullRefreshState,
+            modifier = Modifier.align(Alignment.TopCenter),
+            contentColor = MaterialTheme.colorScheme.primary
+        )
+    }
 }
 
-/**
- * A card that detects a hold gesture of [holdMs] duration.
- * Shows a progress bar as the user holds.
- * Fires [onAction] when hold completes.
- * Renders [content] inside the surface.
- */
 @Composable
 fun HoldToActionCard(
     ssid: String,
     holdMs: Long,
     onAction: () -> Unit,
-    accentColor: androidx.compose.ui.graphics.Color,
+    accentColor: Color,
     content: @Composable () -> Unit,
 ) {
     val progress = remember { mutableStateOf(0f) }
@@ -264,11 +278,10 @@ fun HoldToActionCard(
             .clip(RoundedCornerShape(12.dp))
             .pointerInput(ssid) {
                 awaitEachGesture {
-                    val down = awaitFirstDown(requireUnconsumed = false)
+                    awaitFirstDown(requireUnconsumed = false)
                     progress.value = 0f
                     var fired = false
                     try {
-                        // Launch progress animation
                         val job = scope.launch {
                             val steps = 60
                             for (i in 1..steps) {
@@ -276,10 +289,8 @@ fun HoldToActionCard(
                                 progress.value = i.toFloat() / steps
                             }
                         }
-                        // Wait for release; if released before completion, cancel
                         val up = waitForUpOrCancellation()
                         if (up != null) {
-                            // Finger lifted. Check if full hold completed.
                             if (progress.value >= 0.99f) {
                                 fired = true
                                 onAction()
@@ -309,12 +320,17 @@ fun HoldToActionCard(
 
 @Composable
 fun PermissionPrompt(onRetry: () -> Unit) {
-    Column(Modifier.fillMaxSize().padding(32.dp),
-        verticalArrangement = Arrangement.Center, horizontalAlignment = Alignment.CenterHorizontally) {
+    Column(
+        Modifier.fillMaxSize().padding(32.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
         Text("Location Permission Required", style = MaterialTheme.typography.headlineSmall, textAlign = TextAlign.Center)
         Spacer(Modifier.height(16.dp))
-        Text("WiFi scanning needs location access.\nGrant the permission and reopen the app.",
-            style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center)
+        Text(
+            "WiFi scanning needs location access.\nGrant the permission and reopen the app.",
+            style = MaterialTheme.typography.bodyLarge, textAlign = TextAlign.Center
+        )
         Spacer(Modifier.height(16.dp))
         Button(onClick = onRetry) { Text("Grant Permission") }
     }
