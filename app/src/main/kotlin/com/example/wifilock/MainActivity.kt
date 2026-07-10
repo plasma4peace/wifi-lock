@@ -65,8 +65,11 @@ class MainActivity : ComponentActivity() {
             ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
         } else true
         permissionsGranted.value = allGranted
-        if (allGranted && notifOk && pendingLockSsid.isNotEmpty()) {
-            pendingLockSsid.removeFirst().let(this::doLock)
+        if (allGranted && notifOk) {
+            if (wifiManager.isWifiEnabled) startScan()
+            if (pendingLockSsid.isNotEmpty()) {
+                pendingLockSsid.removeFirst().let(this::doLock)
+            }
         }
     }
 
