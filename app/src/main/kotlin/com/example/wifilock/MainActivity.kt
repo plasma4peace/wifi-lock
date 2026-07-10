@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.SharedPreferences
 import android.content.pm.PackageManager
+import android.location.LocationManager
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
 import android.os.Build
@@ -16,12 +17,11 @@ import android.os.Looper
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
-import android.provider.Settings
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -43,12 +43,6 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-
-
-    private fun isLocationEnabled(): Boolean {
-        val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
-        return lm.isProviderEnabled(android.location.LocationProvider.GPS_PROVIDER) || lm.isProviderEnabled(android.location.LocationProvider.NETWORK_PROVIDER)
-    }
 class MainActivity : ComponentActivity() {
 
     private lateinit var wifiManager: WifiManager
@@ -75,6 +69,7 @@ class MainActivity : ComponentActivity() {
         permissionsGranted.value = allGranted
         if (allGranted && notifOk) {
             if (wifiManager.isWifiEnabled) startScan()
+            startServiceSafe()
             if (pendingLockSsid.isNotEmpty()) {
                 pendingLockSsid.removeFirst().let(this::doLock)
             }
@@ -107,19 +102,13 @@ class MainActivity : ComponentActivity() {
         } else {
             permissionsGranted.value = true
             if (wifiManager.isWifiEnabled) startScan()
-        }
-
-        // Start persistent service only if notification permission is granted
-        val si = Intent(this, WiFiLockService::class.java)
-        if (hasNotificationPermission()) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(si)
-            else startService(si)
+            startServiceSafe()
         }
 
         setContent {
             val granted = permissionsGranted.value
             val lockedSsid = remember { mutableStateOf(savedSsid) }
-        var locationEnabled by remember { mutableStateOf(isLocationEnabled()) }
+            var locationEnabled by remember { mutableStateOf(isLocationEnabled()) }
 
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -131,7 +120,10 @@ class MainActivity : ComponentActivity() {
                             locationEnabled = locationEnabled,
                             onLock = { ssid -> doLock(ssid); lockedSsid.value = ssid },
                             onUnlock = { doUnlock(); lockedSsid.value = null },
-                            onRefresh = { if (hasRequiredPermissions()) startScan() },
+                            onRefresh = {
+                                locationEnabled = isLocationEnabled()
+                                if (hasRequiredPermissions()) startScan()
+                            },
                         )
                     } else {
                         PermissionPrompt {
@@ -143,26 +135,38 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun startServiceSafe() {
+        if (!hasNotificationPermission()) return
+        val i = Intent(this, WiFiLockService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i)
+        else startService(i)
+    }
+
     private fun startScan() {
         isScanning.value = true
         mainHandler.removeCallbacks(scanTimeout)
         mainHandler.postDelayed(scanTimeout, 6000)
-        wifiManager.startScan()
+        try {
+            wifiManager.startScan()
+        } catch (e: Exception) {
+            isScanning.value = false
+        }
     }
 
-        private fun startSvc(intent: Intent) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
-        else startService(intent)
-    }
-
-private fun doLock(ssid: String) {
+    private fun doLock(ssid: String) {
         val i = Intent(this, WiFiLockService::class.java).apply { putExtra("LOCKED_SSID", ssid) }
-        startSvc(i)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
     }
 
     private fun doUnlock() {
         val i = Intent(this, WiFiLockService::class.java).apply { putExtra("UNLOCK", true) }
-        startSvc(i)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+    }
+
+    private fun isLocationEnabled(): Boolean {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        return lm.isProviderEnabled(LocationManager.GPS_PROVIDER) ||
+                lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
     override fun onDestroy() {
@@ -170,6 +174,11 @@ private fun doLock(ssid: String) {
         mainHandler.removeCallbacks(scanTimeout)
         scanReceiver?.let { unregisterReceiver(it) }
     }
+
+    private fun hasNotificationPermission(): Boolean =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
+        } else true
 
     private fun hasRequiredPermissions(): Boolean =
         getRequiredPermissions().all { ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED }
@@ -212,7 +221,6 @@ fun WiFiLockScreen(
                 Spacer(Modifier.height(8.dp))
             }
 
-            // ===== LOCKED NETWORK (pinned at top) =====
             if (lockedSsid != null) {
                 item {
                     HoldToActionCard(
@@ -236,22 +244,25 @@ fun WiFiLockScreen(
                 }
             }
 
-            // ===== NETWORK LIST =====
             if (results.isEmpty() && !isScanning) {
                 item {
                     Box(
-                        Modifier.fillMaxWidth().height(300.dp).clickable(enabled = lockedSsid == null) { onRefresh() },
+                        Modifier.fillMaxWidth().height(300.dp)
+                            .clickable(enabled = lockedSsid == null) { onRefresh() },
                         contentAlignment = Alignment.Center
                     ) {
                         if (!locationEnabled) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text("Location is OFF.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+                                Text("Location is OFF", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
                                 Spacer(Modifier.height(8.dp))
-                                Text("Please enable Location in Settings to scan WiFi.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
+                                Text(
+                                    "Enable Location scanning in Settings to see WiFi networks.",
+                                    textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium
+                                )
                             }
                         } else {
                             Text(
-                                if (lockedSsid != null) "Scanning..." else "Tap to scan.",
+                                if (lockedSsid != null) "Scanning..." else "Pull down or tap to scan.",
                                 textAlign = TextAlign.Center
                             )
                         }
@@ -315,7 +326,6 @@ fun HoldToActionCard(
                 awaitEachGesture {
                     awaitFirstDown(requireUnconsumed = false)
                     progress.value = 0f
-                    var fired = false
                     try {
                         val job = scope.launch {
                             val steps = 60
@@ -327,7 +337,6 @@ fun HoldToActionCard(
                         val up = waitForUpOrCancellation()
                         if (up != null) {
                             if (progress.value >= 0.99f) {
-                                fired = true
                                 onAction()
                             }
                         }
