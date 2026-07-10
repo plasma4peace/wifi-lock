@@ -198,42 +198,44 @@ fun WiFiLockScreen(
                 Spacer(Modifier.height(12.dp))
             }
 
-            // ===== NETWORK LIST =====
-            if (results.isEmpty() && !isScanning) {
-                Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                    Text(
-                        if (lockedSsid != null) "Scanning..." else "No networks found.\nPull down to scan.",
-                        textAlign = TextAlign.Center
-                    )
+            // ===== NETWORK LIST (always a scrollable view for pull-to-refresh) =====
+            LazyColumn(
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+                modifier = Modifier.fillMaxSize()
+            ) {
+                if (results.isEmpty() && !isScanning) {
+                    item {
+                        Box(Modifier.fillMaxSize().height(300.dp), contentAlignment = Alignment.Center) {
+                            Text(
+                                if (lockedSsid != null) "Scanning..." else "No networks found.\nPull down to scan.",
+                                textAlign = TextAlign.Center
+                            )
+                        }
+                    }
                 }
-            } else {
-                LazyColumn(verticalArrangement = Arrangement.spacedBy(6.dp), modifier = Modifier.fillMaxSize()) {
-                    items(results, key = { it.SSID + it.BSSID }) { r ->
-                        val ssid = r.SSID
-                        if (ssid.isBlank()) return@items
-                        val isLocked = ssid == lockedSsid
-                        if (!isLocked) {
-                            HoldToActionCard(
-                                ssid = ssid,
-                                holdMs = 3000,
-                                onAction = { onLock(ssid) },
-                                accentColor = MaterialTheme.colorScheme.primary,
-                            ) {
-                                Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
-                                    verticalAlignment = Alignment.CenterVertically) {
-                                    Column(Modifier.weight(1f)) {
-                                        Text(if (ssid.isEmpty()) "<hidden>" else ssid, style = MaterialTheme.typography.bodyLarge)
-                                        Text("${r.level} dBm", style = MaterialTheme.typography.bodySmall)
-                                    }
+                items(results, key = { it.SSID + it.BSSID }) { r ->
+                    val ssid = r.SSID
+                    if (ssid.isBlank()) return@items
+                    val isLocked = ssid == lockedSsid
+                    if (!isLocked) {
+                        HoldToActionCard(
+                            ssid = ssid,
+                            holdMs = 3000,
+                            onAction = { onLock(ssid) },
+                            accentColor = MaterialTheme.colorScheme.primary,
+                        ) {
+                            Row(Modifier.fillMaxWidth().padding(horizontal = 14.dp, vertical = 12.dp),
+                                verticalAlignment = Alignment.CenterVertically) {
+                                Column(Modifier.weight(1f)) {
+                                    Text(if (ssid.isEmpty()) "<hidden>" else ssid, style = MaterialTheme.typography.bodyLarge)
+                                    Text("${r.level} dBm", style = MaterialTheme.typography.bodySmall)
                                 }
                             }
                         }
                     }
                 }
             }
-        }
-        PullRefreshIndicator(isScanning, pullRefreshState, Modifier.align(Alignment.TopCenter))
-    }
+
 }
 
 /**
