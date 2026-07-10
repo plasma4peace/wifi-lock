@@ -210,7 +210,7 @@ class WiFiLockService : Service() {
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "WiFi Lock Service",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             )
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             manager.createNotificationChannel(channel)

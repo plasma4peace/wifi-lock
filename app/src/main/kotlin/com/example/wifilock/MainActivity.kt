@@ -19,7 +19,9 @@ import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.*
+import android.provider.Settings
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -41,6 +43,12 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
+
+
+    private fun isLocationEnabled(): Boolean {
+        val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+        return lm.isProviderEnabled(android.location.LocationProvider.GPS_PROVIDER) || lm.isProviderEnabled(android.location.LocationProvider.NETWORK_PROVIDER)
+    }
 class MainActivity : ComponentActivity() {
 
     private lateinit var wifiManager: WifiManager
@@ -101,14 +109,17 @@ class MainActivity : ComponentActivity() {
             if (wifiManager.isWifiEnabled) startScan()
         }
 
-        // Start persistent service
+        // Start persistent service only if notification permission is granted
         val si = Intent(this, WiFiLockService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(si)
-        else startService(si)
+        if (hasNotificationPermission()) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(si)
+            else startService(si)
+        }
 
         setContent {
             val granted = permissionsGranted.value
             val lockedSsid = remember { mutableStateOf(savedSsid) }
+        var locationEnabled by remember { mutableStateOf(isLocationEnabled()) }
 
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -117,6 +128,7 @@ class MainActivity : ComponentActivity() {
                             results = scanResults,
                             lockedSsid = lockedSsid.value,
                             isScanning = isScanning.value,
+                            locationEnabled = locationEnabled,
                             onLock = { ssid -> doLock(ssid); lockedSsid.value = ssid },
                             onUnlock = { doUnlock(); lockedSsid.value = null },
                             onRefresh = { if (hasRequiredPermissions()) startScan() },
@@ -138,14 +150,19 @@ class MainActivity : ComponentActivity() {
         wifiManager.startScan()
     }
 
-    private fun doLock(ssid: String) {
+        private fun startSvc(intent: Intent) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(intent)
+        else startService(intent)
+    }
+
+private fun doLock(ssid: String) {
         val i = Intent(this, WiFiLockService::class.java).apply { putExtra("LOCKED_SSID", ssid) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+        startSvc(i)
     }
 
     private fun doUnlock() {
         val i = Intent(this, WiFiLockService::class.java).apply { putExtra("UNLOCK", true) }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(i) else startService(i)
+        startSvc(i)
     }
 
     override fun onDestroy() {
@@ -159,7 +176,10 @@ class MainActivity : ComponentActivity() {
 
     private fun getRequiredPermissions(): Array<String> {
         val p = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) p.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            p.add(Manifest.permission.NEARBY_WIFI_DEVICES)
+            p.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
         return p.toTypedArray()
     }
 }
@@ -170,6 +190,7 @@ fun WiFiLockScreen(
     results: List<ScanResult>,
     lockedSsid: String?,
     isScanning: Boolean,
+    locationEnabled: Boolean,
     onLock: (String) -> Unit,
     onUnlock: () -> Unit,
     onRefresh: () -> Unit,
@@ -218,11 +239,22 @@ fun WiFiLockScreen(
             // ===== NETWORK LIST =====
             if (results.isEmpty() && !isScanning) {
                 item {
-                    Box(Modifier.fillMaxWidth().height(300.dp), contentAlignment = Alignment.Center) {
-                        Text(
-                            if (lockedSsid != null) "Scanning..." else "No networks found.\nPull down to scan.",
-                            textAlign = TextAlign.Center
-                        )
+                    Box(
+                        Modifier.fillMaxWidth().height(300.dp).clickable(enabled = lockedSsid == null) { onRefresh() },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        if (!locationEnabled) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text("Location is OFF.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyLarge)
+                                Spacer(Modifier.height(8.dp))
+                                Text("Please enable Location in Settings to scan WiFi.", textAlign = TextAlign.Center, style = MaterialTheme.typography.bodyMedium)
+                            }
+                        } else {
+                            Text(
+                                if (lockedSsid != null) "Scanning..." else "Tap to scan.",
+                                textAlign = TextAlign.Center
+                            )
+                        }
                     }
                 }
             }
