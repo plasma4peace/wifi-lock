@@ -7,6 +7,7 @@ import android.app.PendingIntent
 import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.content.SharedPreferences
 import android.net.wifi.WifiManager
 import android.os.Build
 import android.os.Handler
@@ -23,7 +24,10 @@ import java.util.Locale
 class WiFiLockService : Service() {
 
     private val CHANNEL_ID = "wifi_lock_channel"
+    private val PREFS_NAME = "wifi_lock_prefs"
+    private val KEY_LOCKED_SSID = "locked_ssid"
     private lateinit var wifiManager: WifiManager
+    private lateinit var prefs: SharedPreferences
     private var lockedSsid: String? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
@@ -33,8 +37,13 @@ class WiFiLockService : Service() {
     override fun onCreate() {
         super.onCreate()
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
+        // Restore locked SSID from prefs (survives app/service restart)
+        lockedSsid = prefs.getString(KEY_LOCKED_SSID, null)
+        if (!lockedSsid.isNullOrBlank()) {
+            log("Restored locked SSID from prefs: $lockedSsid")
+        }
         createChannel()
-        // Must call startForeground immediately so the system doesn't kill us
         try {
             val notif = buildNotification(
                 if (lockedSsid != null) "Locked to $lockedSsid" else "Idle — no network locked"
@@ -42,6 +51,9 @@ class WiFiLockService : Service() {
             startForeground(1, notif)
         } catch (e: Exception) {
             log("startForeground FAILED: ${e.message}")
+        }
+        if (!lockedSsid.isNullOrBlank()) {
+            startMonitoring()
         }
     }
 
@@ -52,19 +64,23 @@ class WiFiLockService : Service() {
         when {
             unlock -> {
                 log("Unlock requested — stopping service")
+                prefs.edit().remove(KEY_LOCKED_SSID).apply()
+                lockedSsid = null
                 stopSelf()
                 return START_NOT_STICKY
             }
             newSsid != null -> {
                 lockedSsid = newSsid
-                log("Service locked to: $lockedSsid")
-                // Immediately try to connect
+                prefs.edit().putString(KEY_LOCKED_SSID, newSsid).apply()
+                log("Service locked to: $lockedSsid (saved to prefs)")
                 reconnect(newSsid)
                 startMonitoring()
                 updateNotification("Locked to $lockedSsid")
             }
             else -> {
-                updateNotification("Idle — no network locked")
+                updateNotification(
+                    if (lockedSsid != null) "Locked to $lockedSsid" else "Idle — no network locked"
+                )
             }
         }
         return START_STICKY
@@ -165,7 +181,6 @@ class WiFiLockService : Service() {
         } catch (e: Exception) {
             log("enableNetwork failed: ${e.message}")
         }
-        // Also try reconnect as fallback
         try {
             wifiManager.reassociate()
             wifiManager.reconnect()
@@ -174,3 +189,60 @@ class WiFiLockService : Service() {
         }
     }
 
+    private fun log(msg: String) {
+        Log.d("WiFiLockService", msg)
+        try {
+            val dir = File(filesDir, "crashlogs")
+            dir.mkdirs()
+            val logFile = File(dir, "service_log.txt")
+            val ts = SimpleDateFormat("HH:mm:ss", Locale.US).format(Date())
+            FileWriter(logFile, true).use { w ->
+                w.write("[$ts] $msg\n")
+            }
+        } catch (_: Exception) { }
+    }
+
+    private fun createChannel() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val channel = NotificationChannel(
+                CHANNEL_ID,
+                "WiFi Lock Service",
+                NotificationManager.IMPORTANCE_LOW
+            )
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.createNotificationChannel(channel)
+        }
+    }
+
+    private fun buildNotification(status: String): Notification {
+        val openIntent = Intent(this, MainActivity::class.java).apply {
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
+        }
+        val pi = PendingIntent.getActivity(
+            this, 0, openIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return NotificationCompat.Builder(this, CHANNEL_ID)
+            .setContentTitle("WiFi Lock Active")
+            .setContentText(status)
+            .setSmallIcon(R.drawable.ic_wifi_notification)
+            .setOngoing(true)
+            .setContentIntent(pi)
+            .build()
+    }
+
+    private fun updateNotification(status: String) {
+        try {
+            val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            manager.notify(1, buildNotification(status))
+        } catch (_: Exception) { }
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        thread?.quitSafely()
+        thread = null
+        handler = null
+    }
+}

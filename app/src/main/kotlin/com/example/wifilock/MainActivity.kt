@@ -5,6 +5,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.pm.PackageManager
 import android.net.wifi.ScanResult
 import android.net.wifi.WifiManager
@@ -30,6 +31,7 @@ import androidx.core.content.ContextCompat
 class MainActivity : ComponentActivity() {
 
     private lateinit var wifiManager: WifiManager
+    private lateinit var prefs: SharedPreferences
     private val scanResults = mutableStateListOf<ScanResult>()
     private val permissionsGranted = mutableStateOf(false)
     private val isScanning = mutableStateOf(false)
@@ -62,6 +64,10 @@ class MainActivity : ComponentActivity() {
         (application as WiFiLockApp).checkAndNotifyCrash()
 
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        prefs = applicationContext.getSharedPreferences("wifi_lock_prefs", Context.MODE_PRIVATE)
+
+        // Read the locked SSID that the service may have saved
+        val savedSsid = prefs.getString("locked_ssid", null)
 
         scanReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
@@ -73,18 +79,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-        registerReceiver(
-            scanReceiver,
-            IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION)
-        )
+        registerReceiver(scanReceiver, IntentFilter(WifiManager.SCAN_RESULTS_AVAILABLE_ACTION))
 
         if (!hasRequiredPermissions()) {
             requestPermissionLauncher.launch(getRequiredPermissions())
         } else {
             permissionsGranted.value = true
+            // Auto-scan on open so the list isn't empty
+            if (wifiManager.isWifiEnabled) {
+                startScan()
+            }
         }
 
-        // Start the persistent foreground service (idle in tray)
+        // Ensure the persistent foreground service is running
         val svcIntent = Intent(this, WiFiLockService::class.java)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(svcIntent)
@@ -96,7 +103,8 @@ class MainActivity : ComponentActivity() {
         setContent {
             val granted = permissionsGranted.value
             var selectedSsid by remember { mutableStateOf<String?>(null) }
-            var lockedSsid by remember { mutableStateOf<String?>(null) }
+            // Restore locked SSID from saved prefs — survives app restarts
+            var lockedSsid by remember { mutableStateOf(savedSsid) }
 
             MaterialTheme {
                 Surface(modifier = Modifier.fillMaxSize()) {
@@ -109,10 +117,7 @@ class MainActivity : ComponentActivity() {
                             isWorking = isWorking.value,
                             onScan = {
                                 if (hasRequiredPermissions()) {
-                                    isScanning.value = true
-                                    mainHandler.removeCallbacks(scanTimeout)
-                                    mainHandler.postDelayed(scanTimeout, 6000)
-                                    wifiManager.startScan()
+                                    startScan()
                                 } else {
                                     requestPermissionLauncher.launch(getRequiredPermissions())
                                 }
@@ -148,6 +153,13 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    private fun startScan() {
+        isScanning.value = true
+        mainHandler.removeCallbacks(scanTimeout)
+        mainHandler.postDelayed(scanTimeout, 6000)
+        wifiManager.startScan()
     }
 
     private fun startSvc(intent: Intent) {
@@ -192,9 +204,7 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun getRequiredPermissions(): Array<String> {
-        val permissions = mutableListOf(
-            Manifest.permission.ACCESS_FINE_LOCATION
-        )
+        val permissions = mutableListOf(Manifest.permission.ACCESS_FINE_LOCATION)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             permissions.add(Manifest.permission.NEARBY_WIFI_DEVICES)
         }
@@ -284,10 +294,31 @@ fun MainScreen(
             }
         }
         Spacer(Modifier.height(12.dp))
+
+        // Show locked network status even before scan results come in
+        if (lockedSsid != null && results.none { it.SSID == lockedSsid }) {
+            Surface(
+                tonalElevation = 4.dp,
+                color = MaterialTheme.colorScheme.primaryContainer,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Row(
+                    Modifier.fillMaxWidth().padding(12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Column(Modifier.weight(1f)) {
+                        Text("🔒 $lockedSsid", style = MaterialTheme.typography.bodyLarge)
+                        Text("Locked network", style = MaterialTheme.typography.bodySmall)
+                    }
+                }
+            }
+            Spacer(Modifier.height(8.dp))
+        }
+
         if (results.isEmpty() && !isScanning) {
             Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
-                    "No networks found.\nTap Scan (location must be on).",
+                    if (lockedSsid != null) "Scanning for networks…" else "No networks found.\nTap Scan (location must be on).",
                     textAlign = TextAlign.Center
                 )
             }
