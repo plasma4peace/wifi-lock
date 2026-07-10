@@ -183,7 +183,6 @@ class MainActivity : ComponentActivity() {
             val specifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
                 WifiNetworkSpecifier.Builder()
                     .setSsid(ssid)
-                    .setIsWpa3SaeEnabled(false)
                     .build()
             } else null
             if (specifier != null) {
@@ -204,7 +203,7 @@ class MainActivity : ComponentActivity() {
                         cm.unregisterNetworkCallback(this)
                     }
                 }
-                cm.requestNetwork(request, cb, mainHandler, 5000)
+                cm.requestNetwork(request, cb)
                 log("systemConnect: requestNetwork for $ssid")
                 return
             }
