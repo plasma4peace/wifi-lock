@@ -10,6 +10,13 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiConfiguration
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.os.Build
+import android.provider.Settings
+import android.app.PendingIntent
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -163,19 +170,61 @@ class WiFiLockService : Service() {
     }
 
     private fun reconnect(ssid: String) {
-        // AGGRESSIVE RECONNECT: call every method, every cycle, no delay.
-        // This runs every 2s and tries everything to force reconnection.
-        log("=== AGGRESSIVE RECONNECT to $ssid ===")
+        // SYSTEM-BASED RECONNECT — work with the OS, not against it.
+        // On Android 10+, enableNetwork/reconnect are deprecated and may silently fail.
+        // Instead we use ConnectivityManager and WifiNetworkSuggestion APIs.
 
-        // Step 1: Disconnect first to force a fresh connection attempt
+        log("=== SYSTEM RECONNECT to $ssid ===")
+
+        // 1) ConnectivityManager.requestNetwork() — tells the system "I need WiFi"
+        //    This triggers the system's own reconnection logic for any saved network.
         try {
-            wifiManager.disconnect()
-            log("disconnect() called")
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val request = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+                .build()
+            val cb = object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    log("ConnectivityManager: network available: $network")
+                }
+                override fun onUnavailable() {
+                    log("ConnectivityManager: network unavailable")
+                }
+            }
+            cm.requestNetwork(request, cb)
+            log("ConnectivityManager.requestNetwork() called — system will handle reconnect")
         } catch (e: Exception) {
-            log("disconnect failed: ${e.message}")
+            log("ConnectivityManager.requestNetwork failed: ${e.message}")
         }
 
-        // Step 2: Try enableNetwork for saved networks
+        // 2) addNetworkSuggestions (Android 12+) — silently suggest the locked network
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(false)
+                    .setIsUserInteractionRequired(false)
+                    .build()
+                val suggestionsList = listOf(suggestion)
+                val status = wifiManager.addNetworkSuggestions(suggestionsList)
+                when (status) {
+                    WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS -> {
+                        log("addNetworkSuggestions: SUCCESS for '$ssid'")
+                    }
+                    WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE -> {
+                        log("addNetworkSuggestions: duplicate (already suggested)")
+                    }
+                    else -> {
+                        log("addNetworkSuggestions: status=$status")
+                    }
+                }
+            } catch (e: Exception) {
+                log("addNetworkSuggestions failed: ${e.message}")
+            }
+        }
+
+        // 3) Also try the legacy approach as supplementary (works on some OEMs)
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -183,47 +232,16 @@ class WiFiLockService : Service() {
                     it.SSID.removeSurrounding("\"") == ssid
                 }
                 if (match != null) {
-                    log("Found saved network: ${match.networkId}, calling enableNetwork(true)")
+                    log("Legacy: enabling saved network ${match.networkId}")
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
                     wifiManager.reconnect()
-                    log("enableNetwork+reassociate+reconnect called")
-                    return
                 }
-                log("Saved networks exist but none match '$ssid' — trying add+enable")
             }
         } catch (e: Exception) {
-            log("enableNetwork failed: ${e.message}")
+            log("Legacy reconnect failed: ${e.message}")
         }
 
-        // Step 3: Try addNetwork with WifiConfiguration (works on API <29, may work on 29+)
-        try {
-            val config = android.net.wifi.WifiConfiguration().apply {
-                SSID = "\"$ssid\""
-                allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
-            }
-            val netId = wifiManager.addNetwork(config)
-            if (netId != -1) {
-                log("addNetwork returned id=$netId for '$ssid', calling enableNetwork")
-                wifiManager.enableNetwork(netId, true)
-                wifiManager.reassociate()
-                wifiManager.reconnect()
-                return
-            }
-        } catch (e: Exception) {
-            log("addNetwork failed: ${e.message}")
-        }
-
-        // Step 4: Hammer reconnect + reassociate multiple times
-        for (i in 1..3) {
-            try {
-                wifiManager.reassociate()
-                wifiManager.reconnect()
-                log("reconnect attempt $i called")
-            } catch (e: Exception) {
-                log("reconnect attempt $i failed: ${e.message}")
-            }
-        }
     }
 
     private fun log(msg: String) {
@@ -271,15 +289,11 @@ class WiFiLockService : Service() {
 
     private fun updateNotification(status: String) {
         try {
+            val notif = buildNotification(status)
             val manager = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            manager.notify(1, buildNotification(status))
-        } catch (_: Exception) { }
-    }
-
-    override fun onDestroy() {
-        super.onDestroy()
-        thread?.quitSafely()
-        thread = null
-        handler = null
+            manager.notify(1, notif)
+        } catch (e: Exception) {
+            log("updateNotification failed: ${e.message}")
+        }
     }
 }
