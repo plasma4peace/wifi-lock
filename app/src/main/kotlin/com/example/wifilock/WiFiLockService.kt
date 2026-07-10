@@ -229,7 +229,7 @@ class WiFiLockService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("WiFi Lock Active")
             .setContentText(status)
-            .setSmallIcon(R.mipmap.ic_launcher_foreground)
+            .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setContentIntent(pi)
             .build()
