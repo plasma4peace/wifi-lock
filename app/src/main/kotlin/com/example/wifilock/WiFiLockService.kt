@@ -167,6 +167,7 @@ class WiFiLockService : Service() {
         reconnect(target)
     }
 
+    @Suppress("OverloadResolutionAmbiguity")
     private fun reconnect(ssid: String) {
         // SYSTEM-BASED RECONNECT — work with the OS, not against it.
         // On Android 10+, enableNetwork/reconnect are deprecated and may silently fail.

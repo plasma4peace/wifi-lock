@@ -175,6 +175,7 @@ class MainActivity : ComponentActivity() {
                 lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
+    @Suppress("OverloadResolutionAmbiguity")
     private fun systemConnect(ssid: String) {
         // REAL system-level connect — not a virtual app-scoped connection.
         // Uses WifiManager + ConnectivityManager to make a persistent system connection
@@ -235,7 +236,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun log(msg: String)    private fun log(msg: String) {
+    private fun log(msg: String) {
         android.util.Log.d("WiFiLock", msg)
     }
 
