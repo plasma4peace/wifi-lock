@@ -35,18 +35,13 @@ class WiFiLockService : Service() {
     private var handler: Handler? = null
     private val CHECK_INTERVAL_MS = 5000L
     private var consecutiveFailures = 0
-    private var activeBuilder: NotificationCompat.Builder? = null
 
     override fun onCreate() {
         super.onCreate()
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
         connectivityManager = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         createChannel()
-        startInForeground()
-    }
-
-    // Always show a persistent notification so the app lives in the tray
-    private fun startInForeground() {
+        // Must call startForeground immediately so the system doesn't kill us
         try {
             val notif = buildNotification(
                 if (lockedSsid != null) "Locked to $lockedSsid" else "Idle — no network locked"
@@ -70,11 +65,12 @@ class WiFiLockService : Service() {
             newSsid != null -> {
                 lockedSsid = newSsid
                 log("Service locked to: $lockedSsid")
+                // Immediately try to connect
+                reconnect(newSsid)
                 startMonitoring()
                 updateNotification("Locked to $lockedSsid")
             }
             else -> {
-                // re-delivery / restart: keep idle
                 updateNotification("Idle — no network locked")
             }
         }
@@ -136,7 +132,7 @@ class WiFiLockService : Service() {
 
         if (current == target) {
             consecutiveFailures = 0
-            updateNotification("✅ Locked to $target")
+            updateNotification("Locked to $target")
             return
         }
 
@@ -154,7 +150,7 @@ class WiFiLockService : Service() {
     }
 
     private fun reconnect(ssid: String) {
-        // Strategy 1: enableNetwork for saved networks
+        // Strategy 1: enableNetwork for a SAVED network (keeps device internet working)
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -162,7 +158,8 @@ class WiFiLockService : Service() {
                     it.SSID.removeSurrounding("\"") == ssid
                 }
                 if (match != null) {
-                    log("Found saved network: ${match.networkId}, calling enableNetwork")
+                    log("Found saved network: ${match.networkId}, calling enableNetwork(true)")
+                    // true = make it the highest-priority and connect now
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
                     log("enableNetwork+reassociate called")
@@ -176,10 +173,11 @@ class WiFiLockService : Service() {
             log("enableNetwork failed: ${e.message}")
         }
 
-        // Strategy 2: NetworkSpecifier (API 29+)
+        // Strategy 2 (API 29+): NetworkSpecifier — connects device to the network
+        // WITHOUT bindProcessToNetwork (which would kill normal internet for the app)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             try {
-                log("Trying WifiNetworkSpecifier for '$ssid'")
+                log("Trying WifiNetworkSpecifier for '$ssid' (no process bind)")
                 val specifier = android.net.wifi.WifiNetworkSpecifier.Builder()
                     .setSsid(ssid)
                     .build()
@@ -188,10 +186,10 @@ class WiFiLockService : Service() {
                     .setNetworkSpecifier(specifier)
                     .build()
 
+                // Just let the device connect — do NOT bindProcessToNetwork
                 connectivityManager.requestNetwork(request, object : ConnectivityManager.NetworkCallback() {
                     override fun onAvailable(network: Network) {
-                        log("Specifier: network available, binding $network")
-                        connectivityManager.bindProcessToNetwork(network)
+                        log("Specifier: network available $network (device connected, not bound)")
                     }
                     override fun onUnavailable() {
                         log("Specifier: network unavailable")
@@ -206,6 +204,7 @@ class WiFiLockService : Service() {
             }
         }
 
+        // After several failed attempts, offer a tap-to-open-WiFi-settings action
         if (consecutiveFailures >= 6) {
             val intent = Intent(Settings.ACTION_WIFI_SETTINGS).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -260,20 +259,18 @@ class WiFiLockService : Service() {
         val pi = PendingIntent.getActivity(this, 0, contentIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
 
-        activeBuilder = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("WiFi Lock")
             .setContentText(status)
             .setSmallIcon(R.drawable.ic_wifi_notification)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(pi)
-
-        return activeBuilder!!.build()
+            .build()
     }
 
     private fun updateNotification(status: String) {
         try {
-            // Rebuild builder to keep content intent + ongoing flag
             val contentIntent = Intent(this, MainActivity::class.java).apply {
                 addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP)
             }

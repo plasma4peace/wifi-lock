@@ -85,7 +85,13 @@ class MainActivity : ComponentActivity() {
         }
 
         // Start the persistent foreground service (idle in tray)
-        startService(Intent(this, WiFiLockService::class.java))
+        val svcIntent = Intent(this, WiFiLockService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(svcIntent)
+        } else {
+            @Suppress("DEPRECATION")
+            startService(svcIntent)
+        }
 
         setContent {
             val granted = permissionsGranted.value
@@ -144,10 +150,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun doLock(ssid: String) {
-        val intent = Intent(this, WiFiLockService::class.java).apply {
-            putExtra("LOCKED_SSID", ssid)
-        }
+    private fun startSvc(intent: Intent) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent)
         } else {
@@ -156,16 +159,18 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private fun doLock(ssid: String) {
+        val intent = Intent(this, WiFiLockService::class.java).apply {
+            putExtra("LOCKED_SSID", ssid)
+        }
+        startSvc(intent)
+    }
+
     private fun doUnlock() {
         val intent = Intent(this, WiFiLockService::class.java).apply {
             putExtra("UNLOCK", true)
         }
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(intent)
-        } else {
-            @Suppress("DEPRECATION")
-            startService(intent)
-        }
+        startSvc(intent)
     }
 
     override fun onDestroy() {
