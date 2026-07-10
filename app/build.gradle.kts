@@ -11,8 +11,8 @@ android {
         applicationId = "com.example.wifilock"
         minSdk = 26
         targetSdk = 34
-        versionCode = 9
-        versionName = "1.2"
+        versionCode = 10
+        versionName = "1.4"
     }
 
     signingConfigs {
@@ -64,4 +64,5 @@ dependencies {
     implementation("androidx.compose.ui:ui:1.5.0")
     implementation("androidx.compose.ui:ui-tooling-preview:1.5.0")
     implementation("androidx.compose.material3:material3:1.1.1")
+    implementation("androidx.compose.material:material:1.5.0")
 }
