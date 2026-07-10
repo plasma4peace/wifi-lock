@@ -9,6 +9,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.SharedPreferences
 import android.net.wifi.WifiManager
+import android.net.wifi.WifiConfiguration
 import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
@@ -31,7 +32,7 @@ class WiFiLockService : Service() {
     private var lockedSsid: String? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
-    private val CHECK_INTERVAL_MS = 5000L
+    private val CHECK_INTERVAL_MS = 2000L
     private var consecutiveFailures = 0
 
     override fun onCreate() {
@@ -162,8 +163,19 @@ class WiFiLockService : Service() {
     }
 
     private fun reconnect(ssid: String) {
-        // Silent reconnect: no popups, no dialogs, just keep retrying forever.
-        // This runs every 5s until we reconnect to the target network.
+        // AGGRESSIVE RECONNECT: call every method, every cycle, no delay.
+        // This runs every 2s and tries everything to force reconnection.
+        log("=== AGGRESSIVE RECONNECT to $ssid ===")
+
+        // Step 1: Disconnect first to force a fresh connection attempt
+        try {
+            wifiManager.disconnect()
+            log("disconnect() called")
+        } catch (e: Exception) {
+            log("disconnect failed: ${e.message}")
+        }
+
+        // Step 2: Try enableNetwork for saved networks
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -171,24 +183,46 @@ class WiFiLockService : Service() {
                     it.SSID.removeSurrounding("\"") == ssid
                 }
                 if (match != null) {
-                    log("Found saved network: ${match.networkId}, calling enableNetwork")
+                    log("Found saved network: ${match.networkId}, calling enableNetwork(true)")
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
-                    log("enableNetwork+reassociate called")
+                    wifiManager.reconnect()
+                    log("enableNetwork+reassociate+reconnect called")
                     return
                 }
-                log("Saved networks exist but none match '$ssid' (will retry next cycle)")
-            } else {
-                log("configuredNetworks empty (Android 10+), retrying enableNetwork for any match")
+                log("Saved networks exist but none match '$ssid' — trying add+enable")
             }
         } catch (e: Exception) {
             log("enableNetwork failed: ${e.message}")
         }
+
+        // Step 3: Try addNetwork with WifiConfiguration (works on API <29, may work on 29+)
         try {
-            wifiManager.reassociate()
-            wifiManager.reconnect()
+            val config = android.net.wifi.WifiConfiguration().apply {
+                SSID = "\"$ssid\""
+                allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+            }
+            val netId = wifiManager.addNetwork(config)
+            if (netId != -1) {
+                log("addNetwork returned id=$netId for '$ssid', calling enableNetwork")
+                wifiManager.enableNetwork(netId, true)
+                wifiManager.reassociate()
+                wifiManager.reconnect()
+                return
+            }
         } catch (e: Exception) {
-            log("reconnect fallback failed: ${e.message}")
+            log("addNetwork failed: ${e.message}")
+        }
+
+        // Step 4: Hammer reconnect + reassociate multiple times
+        for (i in 1..3) {
+            try {
+                wifiManager.reassociate()
+                wifiManager.reconnect()
+                log("reconnect attempt $i called")
+            } catch (e: Exception) {
+                log("reconnect attempt $i failed: ${e.message}")
+            }
         }
     }
 
