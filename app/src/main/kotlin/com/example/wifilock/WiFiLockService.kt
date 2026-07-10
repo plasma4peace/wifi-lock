@@ -16,8 +16,6 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.provider.Settings
-import android.app.PendingIntent
-import android.os.Build
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
