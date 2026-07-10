@@ -40,6 +40,12 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
+import android.net.wifi.WifiNetworkSpecifier
+import android.provider.Settings
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -124,6 +130,7 @@ class MainActivity : ComponentActivity() {
                                 locationEnabled = isLocationEnabled()
                                 if (hasRequiredPermissions()) startScan()
                             },
+                            onConnect = { ssid -> systemConnect(ssid) },
                         )
                     } else {
                         PermissionPrompt {
@@ -169,6 +176,70 @@ class MainActivity : ComponentActivity() {
                 lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)
     }
 
+    private fun systemConnect(ssid: String) {
+        // Trigger system-level connect to this SSID.
+        // 1) Use ConnectivityManager + WifiNetworkSpecifier (API 29+)
+        try {
+            val specifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .setIsWpa3SaeEnabled(false)
+                    .build()
+            } else null
+            if (specifier != null) {
+                val request = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .setNetworkSpecifier(specifier)
+                    .build()
+                val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+                val cb = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(network: Network) {
+                        super.onAvailable(network)
+                        log("systemConnect: network available for $ssid")
+                        cm.unregisterNetworkCallback(this)
+                    }
+                    override fun onUnavailable() {
+                        super.onUnavailable()
+                        log("systemConnect: unavailable for $ssid")
+                        cm.unregisterNetworkCallback(this)
+                    }
+                }
+                cm.requestNetwork(request, cb, mainHandler, 5000)
+                log("systemConnect: requestNetwork for $ssid")
+                return
+            }
+        } catch (e: Exception) {
+            log("systemConnect specifier failed: ${e.message}")
+        }
+
+        // 2) Fallback: try legacy enableNetwork (works for saved networks)
+        try {
+            val networks = wifiManager.configuredNetworks
+            if (!networks.isNullOrEmpty()) {
+                val match = networks.firstOrNull {
+                    it.SSID.removeSurrounding("\"") == ssid
+                }
+                if (match != null) {
+                    wifiManager.enableNetwork(match.networkId, true)
+                    wifiManager.reassociate()
+                    wifiManager.reconnect()
+                    log("systemConnect: enableNetwork for saved $ssid")
+                    return
+                }
+            }
+        } catch (e: Exception) {
+            log("systemConnect enableNetwork failed: ${e.message}")
+        }
+
+        // 3) Last resort: open WiFi settings
+        log("systemConnect: opening WiFi settings for $ssid")
+        startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
+    }
+
+    private fun log(msg: String) {
+        android.util.Log.d("WiFiLock", msg)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         mainHandler.removeCallbacks(scanTimeout)
@@ -203,6 +274,7 @@ fun WiFiLockScreen(
     onLock: (String) -> Unit,
     onUnlock: () -> Unit,
     onRefresh: () -> Unit,
+    onConnect: (String) -> Unit,
 ) {
     val pullRefreshState = rememberPullRefreshState(refreshing = isScanning, onRefresh = onRefresh)
 
@@ -226,6 +298,7 @@ fun WiFiLockScreen(
                     HoldToActionCard(
                         ssid = lockedSsid,
                         holdMs = 5000,
+                        onClick = { onConnect(lockedSsid) },
                         onAction = onUnlock,
                         accentColor = MaterialTheme.colorScheme.error,
                     ) {
@@ -278,6 +351,7 @@ fun WiFiLockScreen(
                     HoldToActionCard(
                         ssid = ssid,
                         holdMs = 3000,
+                        onClick = { onConnect(ssid) },
                         onAction = { onLock(ssid) },
                         accentColor = MaterialTheme.colorScheme.primary,
                     ) {
@@ -308,6 +382,7 @@ fun WiFiLockScreen(
 fun HoldToActionCard(
     ssid: String,
     holdMs: Long,
+    onClick: () -> Unit = {},
     onAction: () -> Unit,
     accentColor: Color,
     content: @Composable () -> Unit,
@@ -338,6 +413,8 @@ fun HoldToActionCard(
                         if (up != null) {
                             if (progress.value >= 0.99f) {
                                 onAction()
+                            } else if (progress.value > 0f) {
+                                onClick()
                             }
                         }
                         job.cancel()
