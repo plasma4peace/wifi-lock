@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiConfiguration
+import android.net.wifi.WifiNetworkSpecifier
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -39,10 +40,21 @@ class WiFiLockService : Service() {
     private var handler: Handler? = null
     private val CHECK_INTERVAL_MS = 2000L
     private var consecutiveFailures = 0
+    private var connectivityManager: ConnectivityManager? = null
+    private val networkCallback = object : ConnectivityManager.NetworkCallback() {
+        override fun onLost(network: Network) {
+            log("NetworkCallback: WiFi lost — forcing reconnect")
+            lockedSsid?.let { reconnect(it) }
+        }
+        override fun onAvailable(network: Network) {
+            log("NetworkCallback: network available")
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
         wifiManager = applicationContext.getSystemService(Context.WIFI_SERVICE) as WifiManager
+        connectivityManager = applicationContext.getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
         prefs = applicationContext.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
         // Restore locked SSID from prefs (survives app/service restart)
         lockedSsid = prefs.getString(KEY_LOCKED_SSID, null)
@@ -75,6 +87,7 @@ class WiFiLockService : Service() {
                 log("Unlock requested — stopping service")
                 prefs.edit().remove(KEY_LOCKED_SSID).apply()
                 lockedSsid = null
+                stopMonitoring()
                 stopSelf()
                 return START_NOT_STICKY
             }
@@ -96,6 +109,15 @@ class WiFiLockService : Service() {
     }
 
     private fun startMonitoring() {
+        try {
+            val req = NetworkRequest.Builder()
+                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                .build()
+            connectivityManager?.registerNetworkCallback(req, networkCallback)
+            log("Registered real-time WiFi disconnect callback")
+        } catch (e: Exception) {
+            log("registerNetworkCallback failed: ${e.message}")
+        }
         thread?.quitSafely()
         thread = HandlerThread("wifi-lock-monitor").also {
             it.start()
@@ -169,61 +191,21 @@ class WiFiLockService : Service() {
 
     @Suppress("OverloadResolutionAmbiguity")
     private fun reconnect(ssid: String) {
-        // SYSTEM-BASED RECONNECT — work with the OS, not against it.
-        // On Android 10+, enableNetwork/reconnect are deprecated and may silently fail.
-        // Instead we use ConnectivityManager and WifiNetworkSuggestion APIs.
+        // AGGRESSIVE RECONNECT — forces system to connect to the locked SSID.
+        // Uses every available API, every cycle.
 
-        log("=== SYSTEM RECONNECT to $ssid ===")
+        log("=== AGGRESSIVE RECONNECT to $ssid ===")
 
-        // 1) ConnectivityManager.requestNetwork() — tells the system "I need WiFi"
-        //    This triggers the system's own reconnection logic for any saved network.
+        // 1) Disconnect first to reset WiFi state and force fresh scan+connect
         try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val request = NetworkRequest.Builder()
-                .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
-                .build()
-            val cb = object : ConnectivityManager.NetworkCallback() {
-                override fun onAvailable(network: Network) {
-                    log("ConnectivityManager: network available: $network")
-                }
-                override fun onUnavailable() {
-                    log("ConnectivityManager: network unavailable")
-                }
-            }
-            cm.requestNetwork(request, cb)
-            log("ConnectivityManager.requestNetwork() called — system will handle reconnect")
+            wifiManager.disconnect()
+            log("disconnect() called")
+            Thread.sleep(300)
         } catch (e: Exception) {
-            log("ConnectivityManager.requestNetwork failed: ${e.message}")
+            log("disconnect failed: ${e.message}")
         }
 
-        // 2) addNetworkSuggestions (Android 12+) — silently suggest the locked network
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
-                    .setSsid(ssid)
-                    .setIsAppInteractionRequired(false)
-                    .setIsUserInteractionRequired(false)
-                    .build()
-                val suggestionsList = listOf(suggestion)
-                val status = wifiManager.addNetworkSuggestions(suggestionsList)
-                when (status) {
-                    WifiManager.STATUS_NETWORK_SUGGESTIONS_SUCCESS -> {
-                        log("addNetworkSuggestions: SUCCESS for '$ssid'")
-                    }
-                    WifiManager.STATUS_NETWORK_SUGGESTIONS_ERROR_ADD_DUPLICATE -> {
-                        log("addNetworkSuggestions: duplicate (already suggested)")
-                    }
-                    else -> {
-                        log("addNetworkSuggestions: status=$status")
-                    }
-                }
-            } catch (e: Exception) {
-                log("addNetworkSuggestions failed: ${e.message}")
-            }
-        }
-
-        // 3) Also try the legacy approach as supplementary (works on some OEMs)
+        // 2) enableNetwork + reassociate + reconnect (legacy but still works on many OEMs)
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -231,16 +213,73 @@ class WiFiLockService : Service() {
                     it.SSID.removeSurrounding("\"") == ssid
                 }
                 if (match != null) {
-                    log("Legacy: enabling saved network ${match.networkId}")
+                    log("enableNetwork on saved netId=${match.networkId}")
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
                     wifiManager.reconnect()
                 }
             }
         } catch (e: Exception) {
-            log("Legacy reconnect failed: ${e.message}")
+            log("enableNetwork failed: ${e.message}")
         }
 
+        // 3) addNetworkSuggestions (Android 12+) — tells system to prefer this SSID
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(false)
+                    .setIsUserInteractionRequired(false)
+                    .build()
+                val status = wifiManager.addNetworkSuggestions(listOf(suggestion))
+                log("addNetworkSuggestions status=$status")
+            } catch (e: Exception) {
+                log("addNetworkSuggestions failed: ${e.message}")
+            }
+        }
+
+        // 4) WifiNetworkSpecifier (API 29+) — tells the system "connect me to THIS SSID"
+        // Even though app-scoped, it forces the system to scan and negotiate,
+        // which often causes the real system connection to follow.
+        try {
+            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
+            val specifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                android.net.wifi.WifiNetworkSpecifier.Builder()
+                    .setSsid(ssid)
+                    .build()
+            } else null
+            if (specifier != null) {
+                val netRequest = NetworkRequest.Builder()
+                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
+                    .setNetworkSpecifier(specifier)
+                    .build()
+                val cb = object : ConnectivityManager.NetworkCallback() {
+                    override fun onAvailable(net: Network) {
+                        log("WifiNetworkSpecifier: available $net")
+                        // Also try to bind to it
+                        cm.bindProcessToNetwork(net)
+                        cm.unregisterNetworkCallback(this)
+                    }
+                    override fun onUnavailable() {
+                        log("WifiNetworkSpecifier: unavailable")
+                        cm.unregisterNetworkCallback(this)
+                    }
+                }
+                // Timeout 10s so it doesn't leak
+                cm.requestNetwork(netRequest, cb, 10000)
+                log("WifiNetworkSpecifier requestNetwork sent")
+            }
+        } catch (e: Exception) {
+            log("WifiNetworkSpecifier failed: ${e.message}")
+        }
+
+        // 5) Open system WiFi panel as last resort
+        try {
+            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).apply {
+                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            })
+            log("Opened WiFi settings")
+        } catch (_: Exception) {}
     }
 
     private fun log(msg: String) {
@@ -284,6 +323,19 @@ class WiFiLockService : Service() {
             .setOngoing(true)
             .setContentIntent(pi)
             .build()
+    }
+
+    private fun stopMonitoring() {
+        try {
+            connectivityManager?.unregisterNetworkCallback(networkCallback)
+        } catch (_: Exception) {}
+        thread?.quitSafely()
+        thread = null
+    }
+
+    override fun onDestroy() {
+        super.onDestroy()
+        stopMonitoring()
     }
 
     private fun updateNotification(status: String) {
