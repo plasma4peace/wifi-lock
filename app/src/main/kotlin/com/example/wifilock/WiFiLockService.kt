@@ -57,6 +57,9 @@ class WiFiLockService : Service() {
         }
     }
 
+
+    override fun onBind(intent: Intent?): IBinder? = null
+
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         val newSsid = intent?.getStringExtra("LOCKED_SSID")
         val unlock = intent?.getBooleanExtra("UNLOCK", false) ?: false
