@@ -10,7 +10,6 @@ import android.content.Intent
 import android.content.SharedPreferences
 import android.net.wifi.WifiManager
 import android.net.wifi.WifiConfiguration
-import android.net.wifi.WifiNetworkSpecifier
 import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
@@ -37,7 +36,7 @@ class WiFiLockService : Service() {
     private var lockedSsid: String? = null
     private var thread: HandlerThread? = null
     private var handler: Handler? = null
-    private val CHECK_INTERVAL_MS = 2000L
+    private val CHECK_INTERVAL_MS = 10000L
     private var consecutiveFailures = 0
     private var connectivityManager: ConnectivityManager? = null
     private val networkCallback = object : ConnectivityManager.NetworkCallback() {
@@ -190,12 +189,12 @@ class WiFiLockService : Service() {
 
     @Suppress("OverloadResolutionAmbiguity")
     private fun reconnect(ssid: String) {
-        // AGGRESSIVE RECONNECT — forces system to connect to the locked SSID.
-        // Uses every available API, every cycle.
+        // SILENT RECONNECT — no popups, no system dialogs, no settings panels.
+        // Only uses background APIs that never show system UI.
 
-        log("=== AGGRESSIVE RECONNECT to $ssid ===")
+        log("=== SILENT RECONNECT to $ssid ===")
 
-        // 1) Disconnect first to reset WiFi state and force fresh scan+connect
+        // 1) Disconnect first to reset WiFi state
         try {
             wifiManager.disconnect()
             log("disconnect() called")
@@ -204,7 +203,7 @@ class WiFiLockService : Service() {
             log("disconnect failed: ${e.message}")
         }
 
-        // 2) enableNetwork + reassociate + reconnect (legacy but still works on many OEMs)
+        // 2) enableNetwork + reassociate + reconnect — completely silent, no system UI
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -221,59 +220,6 @@ class WiFiLockService : Service() {
         } catch (e: Exception) {
             log("enableNetwork failed: ${e.message}")
         }
-
-        // 3) addNetworkSuggestions (Android 12+) — tells system to prefer this SSID
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-            try {
-                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
-                    .setSsid(ssid)
-                    .setIsAppInteractionRequired(false)
-                    .setIsUserInteractionRequired(false)
-                    .build()
-                val status = wifiManager.addNetworkSuggestions(listOf(suggestion))
-                log("addNetworkSuggestions status=$status")
-            } catch (e: Exception) {
-                log("addNetworkSuggestions failed: ${e.message}")
-            }
-        }
-
-        // 4) WifiNetworkSpecifier (API 29+) — tells the system "connect me to THIS SSID"
-        // Even though app-scoped, it forces the system to scan and negotiate,
-        // which often causes the real system connection to follow.
-        try {
-            val cm = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
-            val specifier = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                android.net.wifi.WifiNetworkSpecifier.Builder()
-                    .setSsid(ssid)
-                    .build()
-            } else null
-            if (specifier != null) {
-                val netRequest = NetworkRequest.Builder()
-                    .addTransportType(NetworkCapabilities.TRANSPORT_WIFI)
-                    .setNetworkSpecifier(specifier)
-                    .build()
-                val cb = object : ConnectivityManager.NetworkCallback() {
-                    override fun onAvailable(net: Network) {
-                        log("WifiNetworkSpecifier: available $net")
-                        // Also try to bind to it
-                        cm.bindProcessToNetwork(net)
-                        cm.unregisterNetworkCallback(this)
-                    }
-                    override fun onUnavailable() {
-                        log("WifiNetworkSpecifier: unavailable")
-                        cm.unregisterNetworkCallback(this)
-                    }
-                }
-                // Timeout 10s so it doesn't leak
-                cm.requestNetwork(netRequest, cb, 10000)
-                log("WifiNetworkSpecifier requestNetwork sent")
-            }
-        } catch (e: Exception) {
-            log("WifiNetworkSpecifier failed: ${e.message}")
-        }
-
-        // 5) Background only — NO popup, NO settings panel. The OS handles reconnection.
-        log("reconnect: all background APIs attempted for $ssid")
     }
 
     private fun log(msg: String) {
