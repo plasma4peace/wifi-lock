@@ -189,8 +189,8 @@ class WiFiLockService : Service() {
 
     @Suppress("OverloadResolutionAmbiguity")
     private fun reconnect(ssid: String) {
-        // SILENT RECONNECT — no popups, no system dialogs, no settings panels.
-        // Only uses background APIs that never show system UI.
+        // SILENT RECONNECT — no popups, no dialogs, no settings panels.
+        // Only background APIs that never show system UI.
 
         log("=== SILENT RECONNECT to $ssid ===")
 
@@ -203,7 +203,7 @@ class WiFiLockService : Service() {
             log("disconnect failed: ${e.message}")
         }
 
-        // 2) enableNetwork + reassociate + reconnect — completely silent, no system UI
+        // 2) enableNetwork for saved networks — completely silent
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -219,6 +219,40 @@ class WiFiLockService : Service() {
             }
         } catch (e: Exception) {
             log("enableNetwork failed: ${e.message}")
+        }
+
+        // 3) addNetwork for non-saved networks — silent (adds config to system)
+        try {
+            val config = android.net.wifi.WifiConfiguration().apply {
+                SSID = "\"$ssid\""
+                allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+            }
+            val netId = wifiManager.addNetwork(config)
+            if (netId != -1) {
+                log("addNetwork id=$netId, enabling")
+                wifiManager.disconnect()
+                wifiManager.enableNetwork(netId, true)
+                wifiManager.reassociate()
+                wifiManager.reconnect()
+            }
+        } catch (e: Exception) {
+            log("addNetwork failed: ${e.message}")
+        }
+
+        // 4) addNetworkSuggestions (Android 12+) — silent, no dialog
+        // Tells system "this SSID is OK to connect to" without any user prompt.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            try {
+                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(false)
+                    .setIsUserInteractionRequired(false)
+                    .build()
+                val status = wifiManager.addNetworkSuggestions(listOf(suggestion))
+                log("addNetworkSuggestions status=$status")
+            } catch (e: Exception) {
+                log("addNetworkSuggestions failed: ${e.message}")
+            }
         }
     }
 

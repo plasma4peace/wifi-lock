@@ -174,13 +174,12 @@ class MainActivity : ComponentActivity() {
 
     @Suppress("OverloadResolutionAmbiguity")
     private fun systemConnect(ssid: String) {
-        // REAL system-level connect — not a virtual app-scoped connection.
-        // Uses WifiManager + ConnectivityManager to make a persistent system connection
-        // that shows in the system WiFi list.
+        // SILENT SYSTEM CONNECT — connects to the SSID at the system level
+        // with zero popups or dialogs. Uses multiple approaches.
 
         log("systemConnect: connecting to $ssid")
 
-        // 1) Try direct enableNetwork for saved networks (works on most devices)
+        // 1) Try enableNetwork for saved networks (works on most devices, completely silent)
         try {
             val networks = wifiManager.configuredNetworks
             if (!networks.isNullOrEmpty()) {
@@ -189,7 +188,6 @@ class MainActivity : ComponentActivity() {
                 }
                 if (match != null) {
                     log("systemConnect: found saved network ${match.networkId}, enabling")
-                    // Disconnect first to force fresh connection
                     wifiManager.disconnect()
                     wifiManager.enableNetwork(match.networkId, true)
                     wifiManager.reassociate()
@@ -202,29 +200,77 @@ class MainActivity : ComponentActivity() {
             log("systemConnect enableNetwork failed: ${e.message}")
         }
 
-        // 2) Try addNetwork + enableNetwork for non-saved open networks
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+        // 2) Try addNetwork + enableNetwork for non-saved networks (silent, works on pre-Q)
+        try {
+            val config = android.net.wifi.WifiConfiguration().apply {
+                SSID = "\"$ssid\""
+                allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
+            }
+            val netId = wifiManager.addNetwork(config)
+            if (netId != -1) {
+                log("systemConnect: addNetwork id=$netId, enabling")
+                wifiManager.disconnect()
+                wifiManager.enableNetwork(netId, true)
+                wifiManager.reassociate()
+                wifiManager.reconnect()
+                log("systemConnect: addNetwork+enableNetwork done")
+                return
+            }
+        } catch (e: Exception) {
+            log("systemConnect addNetwork failed: ${e.message}")
+        }
+
+        // 3) addNetworkSuggestions (Android 12+) — silent hint to system "this network is OK"
+        // This does NOT show any dialog. It just tells the system to consider this SSID.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             try {
-                val config = android.net.wifi.WifiConfiguration().apply {
-                    SSID = "\"$ssid\""
-                    allowedKeyManagement.set(android.net.wifi.WifiConfiguration.KeyMgmt.NONE)
-                }
-                val netId = wifiManager.addNetwork(config)
-                if (netId != -1) {
-                    log("systemConnect: addNetwork id=$netId, enabling")
-                    wifiManager.disconnect()
-                    wifiManager.enableNetwork(netId, true)
-                    wifiManager.reassociate()
-                    wifiManager.reconnect()
-                    return
-                }
+                val suggestion = android.net.wifi.WifiNetworkSuggestion.Builder()
+                    .setSsid(ssid)
+                    .setIsAppInteractionRequired(false)
+                    .setIsUserInteractionRequired(false)
+                    .build()
+                val status = wifiManager.addNetworkSuggestions(listOf(suggestion))
+                log("systemConnect: addNetworkSuggestions status=$status")
             } catch (e: Exception) {
-                log("systemConnect addNetwork failed: ${e.message}")
+                log("systemConnect addNetworkSuggestions failed: ${e.message}")
             }
         }
 
-        // 3) Fallback: log that manual intervention is needed (NO popup — background only)
-        log("systemConnect: all APIs attempted for $ssid, no popup shown")
+        // 4) If still disconnected, try enableNetwork on any match again after suggestions
+        try {
+            Thread.sleep(500)
+            val current = currentSsid()
+            if (current == ssid) {
+                log("systemConnect: connected after suggestions, checking on system WiFi tab")
+                return
+            }
+            // Retry enableNetwork once more — suggestions may have saved it
+            val networks = wifiManager.configuredNetworks
+            if (!networks.isNullOrEmpty()) {
+                val match = networks.firstOrNull {
+                    it.SSID.removeSurrounding("\"") == ssid
+                }
+                if (match != null) {
+                    wifiManager.disconnect()
+                    wifiManager.enableNetwork(match.networkId, true)
+                    wifiManager.reassociate()
+                    wifiManager.reconnect()
+                    log("systemConnect: retry enableNetwork on ${match.networkId}")
+                }
+            }
+        } catch (e: Exception) {
+            log("systemConnect retry failed: ${e.message}")
+        }
+    }
+
+    private fun currentSsid(): String? {
+        return try {
+            val info = wifiManager.connectionInfo ?: return null
+            val raw = info.ssid ?: return null
+            val cleaned = raw.removeSurrounding("\"")
+            if (cleaned == "<unknown ssid>" || cleaned == "0x" || cleaned.isBlank()) null
+            else cleaned
+        } catch (_: Exception) { null }
     }
 
     private fun log(msg: String) {
