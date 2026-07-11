@@ -44,7 +44,6 @@ import android.net.ConnectivityManager
 import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
-import android.provider.Settings
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -226,14 +225,8 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        // 3) Fallback: open system WiFi settings so user can tap manually
-        log("systemConnect: opening WiFi settings for $ssid")
-        try {
-            val intent = Intent(Settings.Panel.ACTION_WIFI)
-            startActivity(intent)
-        } catch (_: Exception) {
-            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS))
-        }
+        // 3) Fallback: log that manual intervention is needed (NO popup — background only)
+        log("systemConnect: all APIs attempted for $ssid, no popup shown")
     }
 
     private fun log(msg: String) {

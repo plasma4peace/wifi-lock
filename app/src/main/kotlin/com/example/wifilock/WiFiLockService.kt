@@ -16,7 +16,6 @@ import android.net.Network
 import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
-import android.provider.Settings
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.IBinder
@@ -273,13 +272,8 @@ class WiFiLockService : Service() {
             log("WifiNetworkSpecifier failed: ${e.message}")
         }
 
-        // 5) Open system WiFi panel as last resort
-        try {
-            startActivity(Intent(Settings.ACTION_WIFI_SETTINGS).apply {
-                addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            })
-            log("Opened WiFi settings")
-        } catch (_: Exception) {}
+        // 5) Background only — NO popup, NO settings panel. The OS handles reconnection.
+        log("reconnect: all background APIs attempted for $ssid")
     }
 
     private fun log(msg: String) {
